@@ -20,9 +20,6 @@
   const TAX_RATE = 0.003;
 
   const PRICE_LIMIT = 0.1;
-  // 定期定額：每 20 個交易日投入初始資金的 1/12
-  const DCA_INTERVAL = 20;
-  const DCA_PERIODS = 12;
   // 模擬期限：一局最多進行 30 年，從起始日期（第一個即時交易日）起算，不含預產歷史
   const SIM_YEARS = 30;
 
@@ -160,7 +157,7 @@
 
     // 比較基準：只讀行情、不碰亂數，所以不影響行情（ADR-0001）
     const buyHold = { cash: initialCash, shares: 0, investedCapital: initialCash, trades: [] };
-    const dca = { cash: initialCash, shares: 0, investedCapital: initialCash, trades: [] };
+    const dca = { cash: 0, shares: 0, investedCapital: 0, trades: [] };
     const closedCurve = []; // 已收盤的即時交易日的報酬率，在下一個交易日開盤前記下
 
     // 以當下 tick 價計算使用者與比較基準的累計投入報酬率；累計投入本金為 0 時回傳 0
@@ -189,10 +186,14 @@
       account.trades.push({ day: day, shares: n, price: price, fee: fee });
     }
 
-    // 次一個日曆月起於每月首個交易日開盤撥入使用者每月入金
+    // 判定是否為跨入後續日曆月的第一個即時交易日（預產歷史與第一個即時交易日不觸發）
+    function isMonthRollover(day) {
+      return day > HISTORY_DAYS && candles[day].date.slice(0, 7) !== candles[day - 1].date.slice(0, 7);
+    }
+
+    // 撥入使用者每月入金（僅次一個日曆月起）
     function creditMonthlyContribution(day) {
-      if (day <= HISTORY_DAYS || monthlyContribution <= 0) return;
-      if (candles[day].date.slice(0, 7) === candles[day - 1].date.slice(0, 7)) return;
+      if (monthlyContribution <= 0 || !isMonthRollover(day)) return;
       cash += monthlyContribution;
       investedCapital += monthlyContribution;
     }
@@ -201,8 +202,10 @@
     function openBenchmarks(day) {
       const liveDay = day - HISTORY_DAYS;
       if (liveDay === 0 && buyHold.cash > 0) benchmarkBuy(buyHold, buyHold.cash, day);
-      if (liveDay % DCA_INTERVAL === 0 && liveDay / DCA_INTERVAL < DCA_PERIODS) {
-        benchmarkBuy(dca, initialCash / DCA_PERIODS, day);
+      if (monthlyContribution > 0 && (liveDay === 0 || isMonthRollover(day))) {
+        dca.cash += monthlyContribution;
+        dca.investedCapital += monthlyContribution;
+        benchmarkBuy(dca, dca.cash, day);
       }
     }
 
