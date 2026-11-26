@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>股票投資模擬器</title>
+<style>
+  body { margin: 0; font-family: system-ui, sans-serif; background: #111; color: #ddd; }
+  header { display: flex; gap: 16px; align-items: center; padding: 8px 12px; flex-wrap: wrap; }
+  button { background: #333; color: #ddd; border: 1px solid #555; padding: 4px 10px; cursor: pointer; }
+  button.active { background: #555; border-color: #999; }
+  #chart { display: block; width: 100%; height: calc(100vh - 48px); }
+</style>
+</head>
+<body>
+<header>
+  <button id="play">暫停</button>
+  <span>
+    <button data-speed="1" class="active">1x</button>
+    <button data-speed="5">5x</button>
+    <button data-speed="20">20x</button>
+  </span>
+  <span>現價 <b id="price"></b></span>
+  <span>種子 <b id="seed"></b></span>
+</header>
+<canvas id="chart"></canvas>
+<script src="sim-core.js"></script>
+<script>
+  const { createGame, TICKS_PER_DAY } = SimCore;
+  const MS_PER_DAY_1X = 10000;
+  const VISIBLE_CANDLES = 80;
+  const UP = '#e03131', DOWN = '#2f9e44';
+
+  const game = createGame();
+  let playing = true;
+  let speed = 1;
+  let pendingTicks = 0;
+  let lastTime = null;
+
+  document.getElementById('seed').textContent = game.seed;
+  const playBtn = document.getElementById('play');
+  playBtn.onclick = () => {
+    playing = !playing;
+    playBtn.textContent = playing ? '暫停' : '播放';
+  };
+  document.querySelectorAll('[data-speed]').forEach((btn) => {
+    btn.onclick = () => {
+      speed = Number(btn.dataset.speed);
+      document.querySelectorAll('[data-speed]').forEach((b) => b.classList.toggle('active', b === btn));
+    };
+  });
+
+  const canvas = document.getElementById('chart');
+  const ctx = canvas.getContext('2d');
+
+  function draw() {
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    if (canvas.width !== w * dpr || canvas.height !== h * dpr) {
+      canvas.width = w * dpr;
+      canvas.height = h * dpr;
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    const visible = game.candles().slice(-VISIBLE_CANDLES); // 跟隨最新的 K 棒
+    const axisW = 60;
+    const plotW = w - axisW;
+    const priceH = h * 0.75, volTop = priceH + 8, volH = h - volTop;
+    let hi = -Infinity, lo = Infinity, maxVol = 0;
+    for (const c of visible) {
+      hi = Math.max(hi, c.high);
+      lo = Math.min(lo, c.low);
+      maxVol = Math.max(maxVol, c.volume);
+    }
+    const pad = (hi - lo) * 0.05;
+    hi += pad; lo -= pad;
+    const y = (p) => ((hi - p) / (hi - lo)) * priceH;
+    const slot = plotW / VISIBLE_CANDLES;
+    const bodyW = Math.max(1, slot * 0.7);
+
+    // 價格軸
+    ctx.fillStyle = '#888';
+    ctx.font = '11px system-ui';
+    ctx.strokeStyle = '#222';
+    for (let i = 0; i <= 5; i++) {
+      const p = lo + ((hi - lo) * i) / 5;
+      const yy = y(p);
+      ctx.beginPath(); ctx.moveTo(0, yy); ctx.lineTo(plotW, yy); ctx.stroke();
+      ctx.fillText(p.toFixed(2), plotW + 6, yy + 4);
+    }
+
+    visible.forEach((c, i) => {
+      const x = i * slot + slot / 2;
+      ctx.fillStyle = ctx.strokeStyle = c.close >= c.open ? UP : DOWN;
+      ctx.beginPath(); ctx.moveTo(x, y(c.high)); ctx.lineTo(x, y(c.low)); ctx.stroke();
+      const top = y(Math.max(c.open, c.close));
+      ctx.fillRect(x - bodyW / 2, top, bodyW, Math.max(1, y(Math.min(c.open, c.close)) - top));
+      const vh = (c.volume / maxVol) * volH;
+      ctx.fillRect(x - bodyW / 2, h - vh, bodyW, vh);
+    });
+
+    document.getElementById('price').textContent = game.price().toFixed(2);
+  }
+
+  function frame(now) {
+    if (lastTime !== null && playing) {
+      const dt = Math.min(now - lastTime, 100); // 分頁切回來時不要一次補一大堆 tick
+      pendingTicks += (dt * TICKS_PER_DAY * speed) / MS_PER_DAY_1X;
+      while (pendingTicks >= 1) {
+        game.tick();
+        pendingTicks--;
+      }
+    }
+    lastTime = now;
+    draw();
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+</script>
+</body>
+</html>
