@@ -33,6 +33,7 @@
   #restart-panel { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 6px 12px; border-top: 1px solid #333; font-size: 13px; }
   #restart-panel[hidden] { display: none; }
   #restart-panel input { width: 110px; background: #222; color: #ddd; border: 1px solid #555; padding: 3px 6px; }
+  #custom-speed { width: 56px; background: #222; color: #ddd; border: 1px solid #555; padding: 3px 6px; }
   /* 手機版專用元素，桌面版不顯示 */
   .m-only, .tabs, #m-actions, #backdrop, #sheet-close { display: none; }
 
@@ -46,7 +47,7 @@
     header .m-only { display: inline; }
     #restart-panel { order: 2; } /* 和 header 同序，依 DOM 順序排在資訊列下方 */
     aside { order: 3; flex: 1; min-width: 0; min-height: 0; padding: 0 8px 72px; border-left: none; border-top: 1px solid #333; }
-    aside input, #restart-panel input { font-size: 16px; } /* 小於 16px 時 iOS 聚焦輸入框會自動放大頁面 */
+    aside input, #restart-panel input, #custom-speed { font-size: 16px; } /* 小於 16px 時 iOS 聚焦輸入框會自動放大頁面 */
     .tabs { display: flex; position: sticky; top: 0; z-index: 1; background: #111; }
     .tabs button { flex: 1; padding: 8px; border-width: 0 0 2px; border-color: transparent; background: none; }
     .tabs button.active { border-color: #ddd; background: none; }
@@ -71,7 +72,9 @@
   <span>
     <button data-speed="1" class="active">1x</button>
     <button data-speed="5">5x</button>
-    <button data-speed="20">20x</button>
+    <button data-speed="50">50x</button>
+    <button id="custom-speed-btn">自定</button>
+    <input id="custom-speed" type="number" min="1" step="1" value="100" aria-label="自定倍速">x
   </span>
   <button id="reveal">揭曉：關</button>
   <button id="ma">均線：關</button>
@@ -200,6 +203,7 @@
   let showKd = false;
   let period = 'day'; // K 棒週期：day、week、month
   let speed = 1;
+  let customSpeed = 100;
   let pendingTicks = 0;
   let lastTime = null;
 
@@ -210,7 +214,7 @@
   function saveGame() {
     if (saveBlocked) return;
     try {
-      localStorage.setItem(SAVE_KEY, JSON.stringify({ game: game.save(), ui: { speed, showBenchmark, reveal, period, showMa, showKd } }));
+      localStorage.setItem(SAVE_KEY, JSON.stringify({ game: game.save(), ui: { speed, customSpeed, showBenchmark, reveal, period, showMa, showKd } }));
     } catch (e) { /* 無痕模式或空間不足時就不存 */ }
   }
   function loadSave() {
@@ -236,13 +240,50 @@
   const setReveal = makeToggle('reveal', '揭曉', (v) => { reveal = v; });
   const setShowMa = makeToggle('ma', '均線', (v) => { showMa = v; });
   const setShowKd = makeToggle('kd', 'KD', (v) => { showKd = v; });
+  const customSpeedBtn = $('custom-speed-btn');
+  const customSpeedInput = $('custom-speed');
+  const presetSpeeds = new Set(Array.from(document.querySelectorAll('[data-speed]'), (b) => Number(b.dataset.speed)));
+  function parseCustomSpeed() {
+    const raw = customSpeedInput.value.trim();
+    if (!/^\d+$/.test(raw)) return null;
+    const n = Number(raw);
+    return Number.isSafeInteger(n) && n >= 1 ? n : null;
+  }
   function setSpeed(s) {
-    speed = s;
-    document.querySelectorAll('[data-speed]').forEach((b) => b.classList.toggle('active', Number(b.dataset.speed) === s));
+    const valid = Number.isInteger(s) && s >= 1 ? s : 1;
+    speed = valid;
+    const isPreset = presetSpeeds.has(valid);
+    document.querySelectorAll('[data-speed]').forEach((b) => b.classList.toggle('active', Number(b.dataset.speed) === valid));
+    customSpeedBtn.classList.toggle('active', !isPreset);
+    if (!isPreset) {
+      customSpeed = valid;
+      customSpeedInput.value = valid;
+    }
   }
   document.querySelectorAll('[data-speed]').forEach((btn) => {
     btn.onclick = () => setSpeed(Number(btn.dataset.speed));
   });
+  function applyCustomSpeed(allowEmpty) {
+    const n = parseCustomSpeed();
+    if (n !== null) {
+      customSpeedInput.setCustomValidity('');
+      customSpeed = n;
+      setSpeed(n);
+      return;
+    }
+    if (!allowEmpty || customSpeedInput.value.trim() !== '') {
+      customSpeedInput.setCustomValidity('請輸入大於 0 的整數');
+      customSpeedInput.reportValidity();
+    }
+  }
+  customSpeedBtn.onclick = () => applyCustomSpeed(false);
+  customSpeedInput.oninput = () => applyCustomSpeed(true);
+  customSpeedInput.onblur = () => {
+    if (parseCustomSpeed() === null) {
+      customSpeedInput.value = customSpeed;
+      customSpeedInput.setCustomValidity('');
+    }
+  };
   // 日曆日期：核心給 'YYYY-MM-DD'，畫面顯示 'YYYY/MM/DD'
   const fmtDate = (d) => d.replaceAll('-', '/');
   const fmtDateWeek = (d) => `${fmtDate(d)}（${'日一二三四五六'[new Date(`${d}T00:00:00Z`).getUTCDay()]}）`;
@@ -778,7 +819,7 @@
     const ended = game.expired();
     if (ended && playing) setPlaying(false);
     $('expired').hidden = !ended;
-    for (const id of ['play', 'buy', 'sell', 'm-buy', 'm-sell']) $(id).disabled = ended;
+    for (const id of ['play', 'buy', 'sell', 'm-buy', 'm-sell', 'custom-speed-btn', 'custom-speed']) $(id).disabled = ended;
     document.querySelectorAll('[data-speed]').forEach((b) => { b.disabled = ended; });
   }
 
@@ -805,6 +846,10 @@
   // 開啟時讀檔，回到同一個 tick，一律處於暫停狀態
   const saved = loadSave();
   if (saved) {
+    if (Number.isInteger(saved.ui.customSpeed) && saved.ui.customSpeed >= 1) {
+      customSpeed = saved.ui.customSpeed;
+      customSpeedInput.value = customSpeed;
+    }
     setSpeed(saved.ui.speed);
     setReveal(saved.ui.reveal);
     setShowMa(Boolean(saved.ui.showMa));
