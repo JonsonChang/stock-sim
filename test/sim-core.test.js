@@ -585,3 +585,101 @@ test('模擬期限：到期的 30 年存檔讀回仍為到期，在 Node 中重�
   assert.deepEqual(observableState(restored.game), observableState(game));
   assert.ok(elapsed < 3000, `重算花了 ${Math.round(elapsed)} ms`);
 });
+
+// 依定義由日 K 組出一根聚合 K 棒：開盤取期初、收盤取期末、高低取期間極值、量為加總
+function combine(daily, firstDay, lastDay) {
+  const days = daily.slice(firstDay, lastDay + 1);
+  return {
+    startDate: days[0].date,
+    endDate: days.at(-1).date,
+    firstDay,
+    lastDay,
+    open: days[0].open,
+    high: Math.max(...days.map((c) => c.high)),
+    low: Math.min(...days.map((c) => c.low)),
+    close: days.at(-1).close,
+    volume: days.reduce((s, c) => s + c.volume, 0),
+  };
+}
+
+test('週 K：同一週週一到週五為一根，跨月的週不拆開，開高低收量符合定義', () => {
+  const game = createGame({ seed: 7, startDate: '2024-01-01' }); // 2024-01-01 是週一
+  advance(game, TICKS_PER_DAY * 25); // 收盤在 2024-02-02（週五）
+  const daily = game.candles();
+  const weeks = game.candles('week').slice(-5);
+  const h = HISTORY_DAYS;
+  assert.deepEqual(weeks, [
+    combine(daily, h, h + 4),
+    combine(daily, h + 5, h + 9),
+    combine(daily, h + 10, h + 14),
+    combine(daily, h + 15, h + 19),
+    combine(daily, h + 20, h + 24),
+  ]);
+  assert.equal(weeks[4].startDate, '2024-01-29');
+  assert.equal(weeks[4].endDate, '2024-02-02'); // 跨月仍是同一根週 K
+});
+
+test('月 K：同一個日曆月的交易日為一根，開高低收量符合定義', () => {
+  const game = createGame({ seed: 7, startDate: '2024-01-01' });
+  advance(game, TICKS_PER_DAY * 44); // 2024 年 1 月有 23 個平日、2 月有 21 個，收盤在 2024-02-29
+  const daily = game.candles();
+  const h = HISTORY_DAYS;
+  const months = game.candles('month').slice(-2);
+  assert.deepEqual(months, [combine(daily, h, h + 22), combine(daily, h + 23, h + 43)]);
+  assert.equal(months[0].endDate, '2024-01-31');
+  assert.equal(months[1].startDate, '2024-02-01');
+  assert.equal(months[1].endDate, '2024-02-29');
+});
+
+test('週 K、月 K 的交易日範圍首尾相接、涵蓋全部交易日，預產歷史最前面不完整的週或月照樣成為一根', () => {
+  const game = createGame({ seed: 7, startDate: '2024-01-03' }); // 週三起始，預產歷史第一天是 2023-01-18（週三）
+  advance(game, TICKS_PER_DAY * 40 + 77);
+  const daily = game.candles();
+  assert.equal(daily[0].date, '2023-01-18');
+  for (const period of ['week', 'month']) {
+    const bars = game.candles(period);
+    assert.equal(bars[0].firstDay, 0);
+    assert.equal(bars.at(-1).lastDay, daily.length - 1);
+    for (let i = 1; i < bars.length; i++) assert.equal(bars[i].firstDay, bars[i - 1].lastDay + 1, `${period} 第 ${i} 根`);
+  }
+  assert.deepEqual(game.candles('week')[0], combine(daily, 0, 2)); // 2023-01-18～2023-01-20
+  assert.deepEqual(game.candles('month')[0], combine(daily, 0, 9)); // 2023-01-18～2023-01-31
+});
+
+test('盤中正在形成的最後一根週 K、月 K 隨 tick 更新，收盤等於當下 tick 價', () => {
+  const game = createGame({ seed: 7, startDate: '2024-01-01' });
+  advance(game, TICKS_PER_DAY * 2 + 40); // 2024-01-03 盤中
+  for (const period of ['week', 'month']) {
+    const before = game.candles(period).at(-1);
+    assert.equal(before.lastDay, HISTORY_DAYS + 2);
+    assert.equal(before.close, game.price());
+  }
+  advance(game, 30);
+  const daily = game.candles();
+  assert.deepEqual(game.candles('week').at(-1), combine(daily, HISTORY_DAYS, HISTORY_DAYS + 2));
+  assert.equal(game.candles('month').at(-1).close, game.price());
+  assert.equal(game.candles('month').at(-1).volume, combine(daily, game.candles('month').at(-1).firstDay, HISTORY_DAYS + 2).volume);
+});
+
+test('資產曲線依週 K、月 K 取點：即時區段一根一點，取期末交易日收盤值，最後一點是當下即時值', () => {
+  const game = createGame({ seed: 7, startDate: '2024-01-03' }); // 週三起始，第一根即時週 K 跨預產歷史與即時區段
+  advance(game, TICKS_PER_DAY * 3 + 20);
+  game.order({ side: 'buy', shares: 2000 });
+  advance(game, TICKS_PER_DAY * 30 + 15);
+
+  const daily = game.equityCurve();
+  for (const period of ['week', 'month']) {
+    const bars = game.candles(period);
+    const live = bars.map((b, i) => ({ b, i })).filter(({ b }) => b.lastDay >= HISTORY_DAYS);
+    const curve = game.equityCurve(period);
+    assert.equal(curve.length, live.length, period);
+    curve.forEach((p, k) => {
+      const { b, i } = live[k];
+      assert.deepEqual(p, Object.assign({ bar: i }, daily.find((d) => d.day === b.lastDay)));
+    });
+    assert.deepEqual(curve.at(-1), Object.assign({ bar: bars.length - 1, day: HISTORY_DAYS + 33 }, game.returns()));
+  }
+  // 2024-01-03 起：週 K 為 01-01 週、01-08 週…共 8 根即時週 K（第 8 根是 02-19 週盤中）；月 K 為 1、2 月共 2 根
+  assert.equal(game.equityCurve('week').length, 8);
+  assert.equal(game.equityCurve('month').length, 2);
+});

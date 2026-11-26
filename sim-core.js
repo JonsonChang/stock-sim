@@ -308,6 +308,36 @@
       return { ok: true, trade: Object.assign({}, trade) };
     }
 
+    // 聚合 K 棒的分組鍵：週 K 取該週週一的日期，月 K 取年月
+    function periodKey(date, period) {
+      if (period === 'month') return date.slice(0, 7);
+      const ms = parseDate(date);
+      return formatDate(ms - ((new Date(ms).getUTCDay() + 6) % 7) * MS_PER_DAY);
+    }
+
+    // 把日 K 依 K 棒週期聚合；firstDay、lastDay 是涵蓋的交易日索引範圍
+    function aggregate(period) {
+      const bars = [];
+      let key = null;
+      candles.forEach(function (c, i) {
+        const k = periodKey(c.date, period);
+        if (k !== key) {
+          key = k;
+          bars.push({ startDate: c.date, endDate: c.date, firstDay: i, lastDay: i, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume });
+          return;
+        }
+        const b = bars[bars.length - 1];
+        b.endDate = c.date;
+        b.lastDay = i;
+        if (c.high > b.high) b.high = c.high;
+        if (c.low < b.low) b.low = c.low;
+        b.close = c.close;
+        b.volume += c.volume;
+      });
+      return bars;
+    }
+    const isAggregate = function (period) { return period === 'week' || period === 'month'; };
+
     // 進度：day 是當下 K 棒的索引，tick 是當日已經過的 tick 數（TICKS_PER_DAY 表示已收盤）
     function progress() { return { day: candles.length - 1, tick: tickInDay }; }
 
@@ -350,18 +380,29 @@
       price: function () { return price; },
       returns: returns,
       // 資產曲線：從第一個即時交易日起每個交易日一筆報酬率，已收盤的用收盤值，最後一筆是當下即時值
-      equityCurve: function () {
+      // 'week'／'month'：即時區段的每根聚合 K 棒一筆（bar 是聚合 K 棒的索引），取期末交易日（day）的值
+      equityCurve: function (period) {
         const curve = closedCurve.map(function (p) { return Object.assign({}, p); });
         const latest = latestCurvePoint();
         if (latest) curve.push(latest);
-        return curve;
+        if (!isAggregate(period)) return curve;
+        const points = [];
+        aggregate(period).forEach(function (b, i) {
+          if (b.lastDay >= HISTORY_DAYS) points.push(Object.assign({ bar: i }, curve[b.lastDay - HISTORY_DAYS]));
+        });
+        return points;
       },
       // 兩個比較基準的帳戶；trades 的 day 是買進當下 K 棒的索引
       benchmarks: function () {
         return { buyHold: copyAccount(buyHold), dca: copyAccount(dca) };
       },
-      // 回傳 K 棒序列，每根帶交易日的日曆日期（date）；最後一根在盤中時是正在形成的當日 K 棒
-      candles: function () { return candles.map(function (c) { return Object.assign({}, c); }); },
+      // 回傳 K 棒序列；最後一根在盤中時是正在形成的 K 棒
+      // 不指定或 'day'：日 K，每根帶交易日的日曆日期（date）
+      // 'week'／'month'：週 K／月 K，每根帶起日（startDate）、迄日（endDate）與涵蓋的交易日索引範圍（firstDay～lastDay）
+      candles: function (period) {
+        if (isAggregate(period)) return aggregate(period);
+        return candles.map(function (c) { return Object.assign({}, c); });
+      },
       // 回傳每個交易日的市場狀態（bull／bear／sideways）與跳躍標記，和 candles() 對齊
       dayMarkers: function () { return markers.map(function (m) { return Object.assign({}, m); }); },
     };

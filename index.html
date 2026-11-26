@@ -16,6 +16,7 @@
   #chart { display: block; width: 100%; height: 100%; cursor: crosshair; }
   #chart.dragging { cursor: grabbing; }
   #latest { position: absolute; right: 72px; top: 8px; }
+  #periods { position: absolute; left: 8px; top: 8px; }
   aside { flex: 1; min-width: 260px; padding: 8px 12px; overflow-y: auto; border-left: 1px solid #333; font-size: 13px; }
   aside h3 { margin: 12px 0 6px; font-size: 14px; }
   aside input { width: 90px; background: #222; color: #ddd; border: 1px solid #555; padding: 3px 6px; }
@@ -94,6 +95,9 @@
 <main>
 <div id="chart-wrap">
   <canvas id="chart"></canvas>
+  <span id="periods">
+    <button data-period="day" class="active">日 K</button><button data-period="week">週 K</button><button data-period="month">月 K</button>
+  </span>
   <button id="latest" hidden>回到最新</button>
 </div>
 <aside>
@@ -177,6 +181,7 @@
   const showBenchmark = { buyHold: true, dca: true };
   let playing = true;
   let reveal = false;
+  let period = 'day'; // K 棒週期：day、week、month
   let speed = 1;
   let pendingTicks = 0;
   let lastTime = null;
@@ -188,7 +193,7 @@
   function saveGame() {
     if (saveBlocked) return;
     try {
-      localStorage.setItem(SAVE_KEY, JSON.stringify({ game: game.save(), ui: { speed, showBenchmark, reveal } }));
+      localStorage.setItem(SAVE_KEY, JSON.stringify({ game: game.save(), ui: { speed, showBenchmark, reveal, period } }));
     } catch (e) { /* 無痕模式或空間不足時就不存 */ }
   }
   function loadSave() {
@@ -366,9 +371,36 @@
 
   latestBtn.onclick = () => { view.start = null; };
 
+  // 目前 K 棒週期的 K 棒序列；日 K 也補上起迄日與交易日索引範圍，讓各窗格用同一套欄位
+  const bars = () => (period === 'day'
+    ? game.candles().map((c, i) => Object.assign({ startDate: c.date, endDate: c.date, firstDay: i, lastDay: i }, c))
+    : game.candles(period));
+
+  // 切換週期：跟隨最新就維持跟隨；平移中就以右緣日期為錨點；可視根數換算成相同的時間長度，限制在 20 根到全部
+  function setPeriod(p) {
+    if (game && p !== period) {
+      const old = bars(), n = old.length;
+      const count = visibleCount(n), start = viewStart(n);
+      const leftDay = old[Math.max(0, Math.floor(start))].firstDay;
+      const rightDay = old[Math.min(n - 1, Math.ceil(start + count) - 1)].lastDay;
+      period = p;
+      const next = bars(), m = next.length;
+      const barOf = (day) => next.findIndex((b) => b.lastDay >= day);
+      const right = barOf(rightDay);
+      const want = Math.max(MIN_VISIBLE, right - barOf(leftDay) + 1);
+      view.count = want >= m ? Infinity : want;
+      if (view.start !== null) setStart(right + 1 - visibleCount(m), m);
+    }
+    period = p;
+    document.querySelectorAll('[data-period]').forEach((b) => b.classList.toggle('active', b.dataset.period === p));
+  }
+  document.querySelectorAll('[data-period]').forEach((btn) => {
+    btn.onclick = () => setPeriod(btn.dataset.period);
+  });
+
   canvas.addEventListener('wheel', (e) => {
     e.preventDefault();
-    const n = game.candles().length;
+    const n = bars().length;
     const mx = Math.min(e.offsetX, plotWidth());
     // 未跟隨時，游標下的 K 棒位置在縮放前後保持不動；跟隨時固定最右側為最新的 K 棒
     const anchor = viewStart(n) + (mx / plotWidth()) * visibleCount(n);
@@ -384,7 +416,7 @@
   });
   window.addEventListener('mousemove', (e) => {
     if (!drag || e.clientX === drag.x) return;
-    const n = game.candles().length;
+    const n = bars().length;
     if (drag.start === null) drag.start = viewStart(n);
     setStart(drag.start - ((e.clientX - drag.x) / plotWidth()) * visibleCount(n), n);
   });
@@ -404,7 +436,7 @@
   });
   // 只計算放在圖表上的手指（targetTouches），按著底部按鈕的手指不算
   function startPinch(e) {
-    const n = game.candles().length;
+    const n = bars().length;
     const { dist, mid } = pinchInfo(e.targetTouches[0], e.targetTouches[1]);
     touch = { mode: 'pinch', dist, count: visibleCount(n), anchor: viewStart(n) + (mid / plotWidth()) * visibleCount(n) };
   }
@@ -422,7 +454,7 @@
   canvas.addEventListener('touchmove', (e) => {
     e.preventDefault();
     if (!touch) return;
-    const n = game.candles().length;
+    const n = bars().length;
     if (touch.mode === 'pinch') {
       if (e.targetTouches.length < 2) return;
       const { dist, mid } = pinchInfo(e.targetTouches[0], e.targetTouches[1]);
@@ -450,7 +482,7 @@
     // 放開後剩下的手指重新起算手勢，避免畫面跳動
     if (e.targetTouches.length === 0) touch = null;
     else if (e.targetTouches.length >= 2) startPinch(e);
-    else touch = { mode: 'pan', x: touchX(e.targetTouches[0]), start: viewStart(game.candles().length) };
+    else touch = { mode: 'pan', x: touchX(e.targetTouches[0]), start: viewStart(bars().length) };
   }
   canvas.addEventListener('touchend', endTouch, { passive: false });
   canvas.addEventListener('touchcancel', endTouch, { passive: false });
@@ -466,12 +498,13 @@
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
 
-    const all = game.candles();
-    const n = all.length;
+    const all = game.candles(); // 日 K：交易紀錄、目前日期與漲跌用
+    const bs = bars();
+    const n = bs.length;
     const count = visibleCount(n);
     const start = viewStart(n);
     const first = Math.max(0, Math.floor(start));
-    const visible = all.slice(first, Math.min(n, Math.ceil(start + count)));
+    const visible = bs.slice(first, Math.min(n, Math.ceil(start + count)));
     const plotW = plotWidth();
     const priceH = h * 0.6, volTop = priceH + 8, volBottom = h * 0.75, volH = volBottom - volTop;
     const eqTop = volBottom + 8, eqBottom = h - DATE_AXIS_H, eqH = eqBottom - eqTop;
@@ -502,13 +535,14 @@
 
     // 資產曲線：Y 軸是報酬率 %，從 0% 起算；預產的歷史區段沒有資料，自然留白
     const series = ['user', 'buyHold', 'dca'].filter((k) => k === 'user' || showBenchmark[k]);
-    const curve = game.equityCurve();
-    const curveFrom = curve.length ? curve[0].day : n;
+    // 資產曲線一根 K 棒一點，涵蓋最後 curve.length 根 K 棒；idx 是對應的 K 棒索引
+    const curve = game.equityCurve(period).map((p, k, arr) => Object.assign({ idx: n - arr.length + k }, p));
+    const curveFrom = n - curve.length;
     // 多取左右各一點，讓線延伸到窗格邊緣
     const curveVisible = curve.slice(Math.max(0, first - 1 - curveFrom), Math.max(0, first + visible.length + 1 - curveFrom));
     let eqHi = 0, eqLo = 0;
     for (const p of curveVisible) {
-      if (p.day < first || p.day >= first + visible.length) continue;
+      if (p.idx < first || p.idx >= first + visible.length) continue;
       for (const k of series) { eqHi = Math.max(eqHi, p[k]); eqLo = Math.min(eqLo, p[k]); }
     }
     const eqPad = (eqHi - eqLo) * 0.1 || 0.01;
@@ -516,8 +550,8 @@
     const eqY = (r) => eqTop + ((eqHi - r) / (eqHi - eqLo)) * eqH;
     const eqR = (yy) => eqHi - ((yy - eqTop) / eqH) * (eqHi - eqLo);
     // 第一個即時交易日的左緣補一個 0% 起點，曲線從 0% 起算
-    const eqPoints = curveVisible.map((p) => Object.assign({ x: xOf(p.day) }, p));
-    if (curveVisible.length && curveVisible[0].day === curveFrom) {
+    const eqPoints = curveVisible.map((p) => Object.assign({ x: xOf(p.idx) }, p));
+    if (curveVisible.length && curveVisible[0].idx === curveFrom) {
       eqPoints.unshift({ x: xOf(curveFrom) - slot / 2, user: 0, buyHold: 0, dca: 0 });
     }
     ctx.fillStyle = '#888';
@@ -532,24 +566,32 @@
     ctx.beginPath(); ctx.rect(0, 0, plotW, h); ctx.clip(); // 平移到一半的 K 棒不要畫進價格軸
 
     if (reveal) {
-      const markers = game.dayMarkers().slice(first, first + visible.length);
-      // 市場狀態：連續相同狀態的區段畫一條背景帶，左上角加文字標籤
+      const markers = game.dayMarkers();
+      // 市場狀態以交易日為單位：每個交易日在所屬 K 棒的寬度內平分一段
+      const segs = [];
+      visible.forEach((b, i) => {
+        const len = b.lastDay - b.firstDay + 1;
+        for (let d = b.firstDay; d <= b.lastDay; d++) {
+          segs.push({ state: markers[d].state, left: xOf(first + i) - slot / 2 + ((d - b.firstDay) * slot) / len, width: slot / len });
+        }
+      });
+      // 連續相同狀態的區段畫一條背景帶，左上角（週期按鈕下方）加文字標籤
       let bandStart = 0;
-      for (let i = 1; i <= markers.length; i++) {
-        if (i < markers.length && markers[i].state === markers[bandStart].state) continue;
-        const band = STATE_BANDS[markers[bandStart].state];
-        const left = xOf(first + bandStart) - slot / 2;
+      for (let i = 1; i <= segs.length; i++) {
+        if (i < segs.length && segs[i].state === segs[bandStart].state) continue;
+        const band = STATE_BANDS[segs[bandStart].state];
+        const left = segs[bandStart].left;
         ctx.fillStyle = band.fill;
-        ctx.fillRect(left, 0, (i - bandStart) * slot, h);
+        ctx.fillRect(left, 0, segs[i - 1].left + segs[i - 1].width - left, h);
         ctx.fillStyle = '#aaa';
-        ctx.fillText(band.label, Math.max(0, left) + 4, 14); // 區段起點平移出畫面時，標籤留在左緣
+        ctx.fillText(band.label, Math.max(0, left) + 4, 48); // 區段起點平移出畫面時，標籤留在左緣
         bandStart = i;
       }
-      // 跳躍日：K 棒上方加標記
+      // 跳躍：期間內任一個交易日有跳躍，就在該 K 棒上方加標記
       ctx.fillStyle = '#ffd43b';
       ctx.textAlign = 'center';
-      markers.forEach((m, i) => {
-        if (m.jump) ctx.fillText('⚡', xOf(first + i), y(visible[i].high) - 6);
+      visible.forEach((b, i) => {
+        if (markers.slice(b.firstDay, b.lastDay + 1).some((m) => m.jump)) ctx.fillText('⚡', xOf(first + i), y(b.high) - 6);
       });
       ctx.textAlign = 'start';
     }
@@ -564,17 +606,17 @@
       ctx.fillRect(x - bodyW / 2, volBottom - vh, bodyW, vh);
     });
 
-    // 買賣點：▲ 買標在 K 棒下方，▼ 賣標在 K 棒上方
+    // 買賣點：期間內有買進就在 K 棒下方標 ▲，有賣出就在上方標 ▼，兩者都有就都標
+    const trades = game.trades();
+    const tradesIn = (b, side) => trades.filter((t) => t.side === side && t.day >= b.firstDay && t.day <= b.lastDay).length;
     ctx.font = '12px system-ui';
     ctx.textAlign = 'center';
-    for (const t of game.trades()) {
-      const c = visible[t.day - first];
-      if (!c) continue;
-      const x = xOf(t.day);
-      ctx.fillStyle = '#fcc419';
-      if (t.side === 'buy') ctx.fillText('▲', x, y(c.low) + 14);
-      else ctx.fillText('▼', x, y(c.high) - 4);
-    }
+    ctx.fillStyle = '#fcc419';
+    visible.forEach((b, i) => {
+      const x = xOf(first + i);
+      if (tradesIn(b, 'buy')) ctx.fillText('▲', x, y(b.low) + 14);
+      if (tradesIn(b, 'sell')) ctx.fillText('▼', x, y(b.high) - 4);
+    });
     ctx.textAlign = 'start';
 
     ctx.lineWidth = 1.5;
@@ -595,36 +637,39 @@
     ctx.textAlign = 'center';
     for (let i = Math.ceil(first / step) * step; i < first + visible.length; i += step) {
       const x = xOf(i);
-      if (x >= 36 && x <= plotW - 36) ctx.fillText(fmtDate(all[i].date), x, h - 5);
+      if (x >= 36 && x <= plotW - 36) ctx.fillText(fmtDate(bs[i].startDate), x, h - 5);
     }
     ctx.textAlign = 'start';
 
     // 滑鼠所在 K 棒的詳細數字
     const hovered = hoverX !== null && hoverX < plotW && !drag ? Math.floor(start + hoverX / slot) : -1;
     if (hovered >= 0 && hovered < n) {
-      const c = all[hovered];
+      const c = bs[hovered];
       const x = xOf(hovered);
       ctx.strokeStyle = '#666';
       ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
-      const text = `${fmtDateWeek(c.date)}　開 ${c.open.toFixed(2)}　高 ${c.high.toFixed(2)}　低 ${c.low.toFixed(2)}　收 ${c.close.toFixed(2)}　量 ${c.volume}`;
+      // 日 K 顯示單一日期；週 K、月 K 顯示起日–迄日與期間內買進、賣出筆數
+      const head = period === 'day' ? fmtDateWeek(c.startDate) : `${fmtDate(c.startDate)}–${fmtDate(c.endDate)}`;
+      const ohlc = `開 ${c.open.toFixed(2)}　高 ${c.high.toFixed(2)}　低 ${c.low.toFixed(2)}　收 ${c.close.toFixed(2)}`;
+      const counts = period === 'day' ? [] : [`買進 ${tradesIn(c, 'buy')} 筆　賣出 ${tradesIn(c, 'sell')} 筆`];
+      const text = [head, ohlc, `量 ${c.volume}`, ...counts].join('　');
       ctx.font = '12px system-ui';
-      // 窄螢幕放不下一行時拆成兩行
-      const lines = ctx.measureText(text).width + 20 > w
-        ? [`${fmtDateWeek(c.date)}　量 ${c.volume}`, `開 ${c.open.toFixed(2)}　高 ${c.high.toFixed(2)}　低 ${c.low.toFixed(2)}　收 ${c.close.toFixed(2)}`]
-        : [text];
+      // 窄螢幕放不下一行時拆成多行
+      const lines = ctx.measureText(text).width + 20 > w ? [`${head}　量 ${c.volume}`, ohlc, ...counts] : [text];
+      // 放在週期按鈕下方
       ctx.fillStyle = 'rgba(17, 17, 17, 0.85)';
-      ctx.fillRect(4, 4, Math.max(...lines.map((l) => ctx.measureText(l).width)) + 12, 6 + lines.length * 16);
+      ctx.fillRect(4, 36, Math.max(...lines.map((l) => ctx.measureText(l).width)) + 12, 6 + lines.length * 16);
       ctx.fillStyle = '#ddd';
-      lines.forEach((l, i) => ctx.fillText(l, 10, 19 + i * 16));
+      lines.forEach((l, i) => ctx.fillText(l, 10, 51 + i * 16));
     }
 
     latestBtn.hidden = view.start === null;
 
     document.getElementById('price').textContent = game.price().toFixed(2);
-    const change = n > 1 ? game.price() / all[n - 2].close - 1 : 0; // 相對前一交易日收盤
+    const change = all.length > 1 ? game.price() / all.at(-2).close - 1 : 0; // 相對前一交易日收盤
     $('change').textContent = pct(change);
     $('change').style.color = change > 0 ? UP : change < 0 ? DOWN : '';
-    const today = all[n - 1].date;
+    const today = all.at(-1).date;
     $('date').textContent = fmtDateWeek(today);
     $('year').textContent = yearNo(game.startDate, today);
     updatePanel(all);
@@ -664,6 +709,7 @@
   if (saved) {
     setSpeed(saved.ui.speed);
     setReveal(saved.ui.reveal);
+    setPeriod(saved.ui.period || 'day'); // 加入 K 棒週期之前的存檔沒有這個欄位
     for (const key of ['buyHold', 'dca']) $(`show-${key}`).checked = showBenchmark[key] = saved.ui.showBenchmark[key];
     setPlaying(false);
     // 長局重算要花一點時間：先讓「讀取中…」畫上畫面，再開始重算
