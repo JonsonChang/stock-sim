@@ -1005,3 +1005,100 @@ test('定期定額零頭滾存：高股價單月買不完或買不起時保留�
   advance(expGame, TICKS_PER_DAY - 1);
   assert.equal(expGame.expired(), true);
 });
+
+test('投資報告：開局未推進時三方損益與報酬率為 0，年化報酬率為空值，情境資訊為起始狀態', () => {
+  const game = createGame({ seed: 7, startDate: '2024-01-15', initialCash: 1000000, monthlyContribution: 10000 });
+  const r = game.report();
+  assert.equal(r.seed, 7);
+  assert.equal(r.startDate, '2024-01-15');
+  assert.equal(r.currentDate, null);
+  assert.equal(r.liveDays, 0);
+  assert.equal(r.simYear, 1);
+  assert.equal(r.expired, false);
+  assert.deepEqual(r.user, {
+    investedCapital: 1000000, totalAssets: 1000000, totalPnl: 0, totalReturn: 0, annualizedReturn: null,
+    realizedPnl: 0, unrealizedPnl: 0, totalFees: 0, totalTax: 0,
+  });
+  assert.deepEqual(r.buyHold, { investedCapital: 1000000, totalAssets: 1000000, totalPnl: 0, totalReturn: 0, annualizedReturn: null });
+  assert.deepEqual(r.dca, { investedCapital: 0, totalAssets: 0, totalPnl: 0, totalReturn: 0, annualizedReturn: null });
+});
+
+test('投資報告：盤中持有部位時，總資產、未實現損益與總報酬率隨當下 tick 價即時更新，手續費與證交稅累計所有成交', () => {
+  const game = createGame({ seed: 7, startDate: '2024-01-15', initialCash: 1000000, monthlyContribution: 10000 });
+  advance(game, 10);
+  const buy = game.order({ side: 'buy', shares: 2000 }).trade;
+  advance(game, 30);
+  const sell = game.order({ side: 'sell', shares: 500 }).trade;
+  const cost = buy.price * 2000 + buy.fee;
+  for (let i = 0; i < 3; i++) {
+    advance(game, 50);
+    const p = game.price();
+    const r = game.report();
+    const cash = 1000000 - cost + (sell.price * 500 - sell.fee - sell.tax);
+    assert.equal(r.liveDays, 1);
+    assert.equal(r.currentDate, '2024-01-15');
+    assert.ok(Math.abs(r.user.totalAssets - (cash + 1500 * p)) < 1e-6);
+    assert.ok(Math.abs(r.user.unrealizedPnl - (1500 * p - cost * 0.75)) < 1e-6);
+    assert.ok(Math.abs(r.user.realizedPnl - (sell.price * 500 - sell.fee - sell.tax - cost * 0.25)) < 1e-6);
+    assert.ok(Math.abs(r.user.totalPnl - (r.user.realizedPnl + r.user.unrealizedPnl)) < 1e-6);
+    assert.ok(Math.abs(r.user.totalReturn - (cash + 1500 * p - 1000000) / 1000000) < 1e-12);
+    assert.equal(r.user.annualizedReturn, null);
+    assert.equal(r.user.totalFees, buy.fee + sell.fee);
+    assert.equal(r.user.totalTax, sell.tax);
+    const bh = game.benchmarks().buyHold;
+    assert.ok(Math.abs(r.buyHold.totalAssets - (bh.cash + bh.shares * p)) < 1e-6);
+  }
+});
+
+function calendarYears(from, to) {
+  return (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86400000 / 365.25;
+}
+
+test('投資報告：未滿 20 個即時交易日時年化報酬率為空值，滿 20 個後依日曆天數 ÷ 365.25 複利年化（三方一致）', () => {
+  const game = createGame({ seed: 11, startDate: '2024-01-15', initialCash: 1000000, monthlyContribution: 10000 });
+  game.order({ side: 'buy', shares: 1000 });
+  advance(game, TICKS_PER_DAY * 19);
+  let r = game.report();
+  assert.equal(r.liveDays, 19);
+  assert.equal(r.user.annualizedReturn, null);
+  assert.equal(r.buyHold.annualizedReturn, null);
+  assert.equal(r.dca.annualizedReturn, null);
+
+  advance(game, TICKS_PER_DAY * 40 + 77);
+  r = game.report();
+  assert.equal(r.liveDays, 60);
+  // 2024-01-15 起第 60 個平日為 2024-04-05，共 81 個日曆天
+  assert.equal(r.currentDate, '2024-04-05');
+  const years = 81 / 365.25;
+  assert.ok(Math.abs(years - calendarYears(r.startDate, r.currentDate)) < 1e-12);
+  // 總資產由當下 tick 價與各自帳戶獨立算出，不取自報告
+  const p = game.price();
+  const a = game.account();
+  const { buyHold, dca } = game.benchmarks();
+  const sides = {
+    user: [a.cash + a.shares * p, a.investedCapital],
+    buyHold: [buyHold.cash + buyHold.shares * p, buyHold.investedCapital],
+    dca: [dca.cash + dca.shares * p, dca.investedCapital],
+  };
+  for (const [key, [assets, invested]] of Object.entries(sides)) {
+    const expected = Math.pow(assets / invested, 1 / years) - 1;
+    assert.ok(Math.abs(r[key].annualizedReturn - expected) < 1e-12, key);
+  }
+  assert.equal(r.simYear, 1);
+});
+
+test('投資報告：模擬年度與到期狀態，存檔以種子重算讀回後報告完全一致', () => {
+  const game = createGame({ seed: 5, startDate: '2024-01-15' });
+  advance(game, 5);
+  game.order({ side: 'buy', shares: 3000 });
+  advance(game, TICKS_PER_DAY * 270);
+  game.order({ side: 'sell', shares: 1000 });
+  advance(game, 123);
+  const r = game.report();
+  assert.equal(r.liveDays, 271);
+  assert.equal(r.currentDate, '2025-01-27');
+  assert.equal(r.simYear, 2);
+  const restored = restoreGame(JSON.parse(JSON.stringify(game.save())));
+  assert.equal(restored.ok, true);
+  assert.deepEqual(restored.game.report(), r);
+});

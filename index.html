@@ -36,6 +36,19 @@
   #custom-speed { width: 56px; background: #222; color: #ddd; border: 1px solid #555; padding: 3px 6px; }
   /* 手機版專用元素，桌面版不顯示 */
   .m-only, .tabs, #m-actions, #backdrop, #sheet-close { display: none; }
+  /* 投資報告：頁內全畫面覆蓋層，桌面與手機共用 */
+  #report { position: fixed; inset: 0; z-index: 10; background: #111; overflow-y: auto; -webkit-overflow-scrolling: touch; font-size: 13px; }
+  #report[hidden] { display: none; }
+  #report .inner { max-width: 960px; margin: 0 auto; padding: 12px 16px 32px; }
+  #report .head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  #report h2 { margin: 0; font-size: 18px; }
+  #report h3 { margin: 16px 0 6px; font-size: 14px; }
+  #report-info { color: #aaa; line-height: 1.6; margin-top: 4px; }
+  #report .scroll-x { overflow-x: auto; }
+  #report .compare { min-width: 420px; }
+  #report th, #report td { padding: 4px 8px; white-space: nowrap; }
+  #report th:first-child, #report td:first-child { text-align: left; }
+  #report .note { color: #888; margin-top: 4px; }
 
   @media (max-width: 768px) {
     html { touch-action: pan-y; } /* 只允許上下捲動，避免兩指捏合或連點兩下誤觸頁面縮放 */
@@ -85,6 +98,7 @@
   <span class="m-only">總資產報酬 <b id="ret-bar"></b></span>
   <span>種子 <b id="seed"></b></span>
   <button id="restart">重新開局</button>
+  <button id="report-btn">投資報告</button>
   <span id="notice" hidden></span>
   <span id="expired" hidden>已達模擬期限</span>
 </header>
@@ -160,6 +174,24 @@
   </section>
 </aside>
 </main>
+<div id="report" hidden role="dialog" aria-label="投資報告">
+  <div class="inner">
+    <div class="head"><h2>投資報告</h2><button id="report-close">關閉</button></div>
+    <div id="report-info"></div>
+    <h3>核心績效</h3>
+    <div class="scroll-x">
+      <table class="compare">
+        <thead><tr><th></th><th><span class="swatch" style="background: var(--user)"></span>我的操作</th><th><span class="swatch" style="background: var(--buyHold)"></span>買進持有</th><th><span class="swatch" style="background: var(--dca)"></span>定期定額</th></tr></thead>
+        <tbody id="report-perf"></tbody>
+      </table>
+    </div>
+    <div id="report-note" class="note"></div>
+    <h3>我的操作明細</h3>
+    <div class="scroll-x">
+      <table><tbody id="report-user"></tbody></table>
+    </div>
+  </div>
+</div>
 <div id="backdrop"></div>
 <div id="m-actions">
   <button id="m-buy">買進</button>
@@ -206,6 +238,7 @@
   let customSpeed = 100;
   let pendingTicks = 0;
   let lastTime = null;
+  let wasExpired = false;
 
   // 舊存檔因引擎版本不符而無法讀取時，在使用者確認重新開局前不覆蓋它
   let saveBlocked = false;
@@ -347,6 +380,8 @@
     shownTrades = -1;
     view.start = null;
     pendingTicks = 0;
+    wasExpired = game.expired(); // 讀檔時原本就已到期的進度不自動開啟投資報告
+    closeReport();
   }
 
   // 重新開局：頁面內的設定區與確認按鈕，不使用 alert／confirm
@@ -390,6 +425,43 @@
     $('notice').hidden = true;
   };
   const pct = (r) => `${r > 0 ? '+' : ''}${(r * 100).toFixed(2)}%`;
+
+  // 投資報告：開啟時自動暫停，關閉後維持暫停
+  const reportEl = $('report');
+  function renderReport() {
+    const r = game.report();
+    const range = r.currentDate ? `${fmtDate(r.startDate)}～${fmtDate(r.currentDate)}` : `${fmtDate(r.startDate)}（尚未開始）`;
+    $('report-info').textContent =
+      `種子 ${r.seed}　${range}　第 ${r.simYear} 年　已進行 ${r.liveDays} 個交易日　${r.expired ? '已達模擬期限' : '模擬進行中'}`;
+    const cols = ['user', 'buyHold', 'dca'];
+    const row = (label, f) => `<tr><td>${label}</td>${cols.map((k) => `<td>${f(r[k])}</td>`).join('')}</tr>`;
+    const annual = (s) => (s.annualizedReturn === null ? '—' : pct(s.annualizedReturn));
+    $('report-perf').innerHTML = [
+      row('累計投入本金', (s) => money(s.investedCapital)),
+      row('總資產', (s) => money(s.totalAssets)),
+      row('總損益', (s) => money(s.totalPnl)),
+      row('總報酬率', (s) => pct(s.totalReturn)),
+      row('年化報酬率', annual),
+    ].join('');
+    $('report-note').textContent = r.liveDays < 20 ? '年化報酬率：未滿 20 個交易日不年化，以免短期報酬被放大誤導。' : '';
+    const u = r.user;
+    $('report-user').innerHTML = [
+      ['已實現損益', money(u.realizedPnl)],
+      ['未實現損益', money(u.unrealizedPnl)],
+      ['累計手續費', money(u.totalFees)],
+      ['累計證交稅', money(u.totalTax)],
+    ].map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('');
+  }
+  function openReport() {
+    if (playing) setPlaying(false);
+    closeSheet();
+    renderReport();
+    reportEl.hidden = false;
+  }
+  function closeReport() { reportEl.hidden = true; }
+  $('report-btn').onclick = openReport;
+  $('report-close').onclick = closeReport;
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !reportEl.hidden) closeReport(); });
 
   let shownTrades = -1;
   function updatePanel(all) {
@@ -835,6 +907,9 @@
       }
     }
     lastTime = now;
+    // 模擬進行中剛推進到模擬期限時，自動開啟一次投資報告
+    if (!wasExpired && game.expired()) openReport();
+    wasExpired = game.expired();
     updateExpired();
     draw();
     requestAnimationFrame(frame);

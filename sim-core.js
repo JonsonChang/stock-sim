@@ -417,10 +417,46 @@
       };
     }
 
+    // 投資報告：以當下 tick 價計算三方績效，唯讀、不影響帳務與行情
+    function report() {
+      const liveDays = Math.max(0, candles.length - HISTORY_DAYS);
+      const currentDate = liveDays > 0 ? candles[candles.length - 1].date : null;
+      // 年化以起始日期至當下交易日的日曆天數 ÷ 365.25 為年數；未滿 20 個即時交易日或總資產 ≤ 0 時不年化
+      const years = currentDate ? (parseDate(currentDate) - parseDate(startDate)) / MS_PER_DAY / 365.25 : 0;
+      function performance(c, n, invested) {
+        const totalAssets = c + n * price;
+        const totalReturn = invested > 0 ? (totalAssets - invested) / invested : 0;
+        const annualizedReturn = liveDays >= 20 && totalAssets > 0 && years > 0 ? Math.pow(1 + totalReturn, 1 / years) - 1 : null;
+        return { investedCapital: invested, totalAssets: totalAssets, totalPnl: totalAssets - invested, totalReturn: totalReturn, annualizedReturn: annualizedReturn };
+      }
+      const a = account();
+      const user = Object.assign(performance(cash, shares, investedCapital), {
+        realizedPnl: a.realizedPnl,
+        unrealizedPnl: a.unrealizedPnl,
+        totalFees: trades.reduce(function (s, t) { return s + t.fee; }, 0),
+        totalTax: trades.reduce(function (s, t) { return s + t.tax; }, 0),
+      });
+      // 模擬年度：從起始日期起算，每滿一個日曆年加一
+      const d = currentDate || startDate;
+      const simYear = Math.max(1, Number(d.slice(0, 4)) - Number(startDate.slice(0, 4)) - (d.slice(5) < startDate.slice(5) ? 1 : 0) + 1);
+      return {
+        seed: seed,
+        startDate: startDate,
+        currentDate: currentDate,
+        liveDays: liveDays,
+        simYear: simYear,
+        expired: expired(),
+        user: user,
+        buyHold: performance(buyHold.cash, buyHold.shares, buyHold.investedCapital),
+        dca: performance(dca.cash, dca.shares, dca.investedCapital),
+      };
+    }
+
     return {
       seed: seed,
       startDate: startDate,
       tick: tick,
+      report: report,
       progress: progress,
       expired: expired,
       save: save,
