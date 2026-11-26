@@ -22,14 +22,14 @@
   const DCA_INTERVAL = 20;
   const DCA_PERIODS = 12;
 
-  // 市場狀態：μ 是每個交易日的對數漂移
+  // 市場狀態：μ 是每個交易日的對數漂移，stay 是每個交易日維持原狀態的機率
+  // 多頭較持久（平均一段約 111 個交易日，空頭與盤整約 33 個），長期約 63% 時間處於多頭，年化漂移約 +7%～8%（參考 VT）
   const STATE_PARAMS = {
-    bull: { mu: 0.0008, sigmaMult: 1 },
-    bear: { mu: -0.001, sigmaMult: 1.3 },
-    sideways: { mu: 0, sigmaMult: 1 },
+    bull: { mu: 0.0008, sigmaMult: 1, stay: 0.991 },
+    bear: { mu: -0.001, sigmaMult: 1.3, stay: 0.97 },
+    sideways: { mu: 0, sigmaMult: 1, stay: 0.97 },
   };
   const STATES = Object.keys(STATE_PARAMS);
-  const STAY_PROB = 0.98;
 
   // GARCH(1,1) 條件波動；DAILY_SIGMA 是長期日波動（未乘上市場狀態倍數）
   const GARCH_ALPHA = 0.08;
@@ -179,7 +179,7 @@
         variance = GARCH_OMEGA + GARCH_ALPHA * shock * shock + GARCH_BETA * variance;
       }
 
-      if (rng() > STAY_PROB) {
+      if (rng() > STATE_PARAMS[state].stay) {
         const others = STATES.filter(function (s) { return s !== state; });
         state = others[Math.floor(rng() * others.length)];
       }

@@ -222,7 +222,7 @@ test('模擬核心提供每個交易日的市場狀態，三種狀態都會出�
 
   let runs = 1;
   for (let i = 1; i < markers.length; i++) if (markers[i].state !== markers[i - 1].state) runs++;
-  // 每個交易日維持原狀態的機率 0.98，平均一段約 50 個交易日
+  // 維持原狀態的機率：多頭 0.991、空頭與盤整 0.97，平均一段約 59 個交易日
   const meanRun = markers.length / runs;
   assert.ok(meanRun > 30 && meanRun < 80, `平均狀態長度 ${meanRun}`);
 });
