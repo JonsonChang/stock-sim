@@ -388,8 +388,8 @@ test('定期定額：在第 1、21、41… 個即時交易日開盤各投入初�
   assert.ok(Math.abs(dca.cash - (1200000 - spent)) < 1e-6);
 });
 
-test('報酬率：使用者與兩個比較基準都以初始資金為分母，即時交易日開始前都是 0', () => {
-  const game = createGame({ seed: 7, initialCash: 1200000 });
+test('報酬率：使用者與買進持有以累計投入本金為分母，即時交易日開始前都是 0', () => {
+  const game = createGame({ seed: 7, startDate: '2024-01-15', initialCash: 1200000, monthlyContribution: 10000 });
   assert.deepEqual(game.returns(), { user: 0, buyHold: 0, dca: 0 });
 
   advance(game, TICKS_PER_DAY * 25 + 40);
@@ -399,8 +399,9 @@ test('報酬率：使用者與兩個比較基準都以初始資金為分母，�
   const { buyHold, dca } = game.benchmarks();
   const a = game.account();
   const r = game.returns();
-  assert.ok(Math.abs(r.user - (a.cash + a.shares * price - 1200000) / 1200000) < 1e-12);
-  assert.ok(Math.abs(r.buyHold - (buyHold.cash + buyHold.shares * price - 1200000) / 1200000) < 1e-12);
+  assert.ok(a.investedCapital > 1200000); // 已跨過 2024-02-01 領取每月入金
+  assert.ok(Math.abs(r.user - (a.cash + a.shares * price - a.investedCapital) / a.investedCapital) < 1e-12);
+  assert.ok(Math.abs(r.buyHold - (buyHold.cash + buyHold.shares * price - buyHold.investedCapital) / buyHold.investedCapital) < 1e-12);
   assert.ok(Math.abs(r.dca - (dca.cash + dca.shares * price - 1200000) / 1200000) < 1e-12);
   assert.notEqual(r.user, 0);
 });
@@ -474,13 +475,20 @@ test('存檔後讀回：K 棒、進度、部位、現金、交易紀錄和比較
   assert.deepEqual(observableState(restored.game), observableState(game));
 });
 
-test('引擎版本號不符時拒絕讀檔', () => {
-  const game = createGame({ seed: 99 });
+test('引擎版本號為第 4 版以上，且版本號不符或缺少每月入金的舊存檔拒絕讀檔', () => {
+  assert.ok(ENGINE_VERSION >= 4);
+  const game = createGame({ seed: 99, monthlyContribution: 15000 });
   advance(game, 300);
   const save = game.save();
   assert.equal(save.version, ENGINE_VERSION);
+  assert.equal(save.settings.monthlyContribution, 15000);
+  assert.deepEqual(restoreGame(Object.assign({}, save, { version: 3 })), { ok: false, reason: 'engine-version' });
   assert.deepEqual(restoreGame(Object.assign({}, save, { version: ENGINE_VERSION - 1 })), { ok: false, reason: 'engine-version' });
   assert.deepEqual(restoreGame(Object.assign({}, save, { version: undefined })), { ok: false, reason: 'engine-version' });
+  const withoutMonthly = Object.assign({}, save, {
+    settings: { startPrice: save.settings.startPrice, initialCash: save.settings.initialCash, startDate: save.settings.startDate },
+  });
+  assert.deepEqual(restoreGame(withoutMonthly), { ok: false, reason: 'engine-version' });
 });
 
 function weekday(date) {
@@ -802,4 +810,132 @@ test('KD：9 根高低相等時 RSV 取 50，不出現 NaN', () => {
     assert.equal(v.k, 50);
     assert.equal(v.d, 50);
   }
+});
+
+function advanceToDayClose(game, date) {
+  if (game.progress().tick < TICKS_PER_DAY) advance(game, TICKS_PER_DAY - game.progress().tick);
+  while (game.candles().at(-1).date !== date) advance(game, TICKS_PER_DAY);
+}
+
+function assertTotalPnlIdentity(a) {
+  assert.ok(Math.abs(a.totalPnl - (a.totalAssets - a.investedCapital)) < 1e-6);
+  assert.ok(Math.abs(a.totalPnl - (a.realizedPnl + a.unrealizedPnl)) < 1e-6);
+}
+
+test('每月入金：預產歷史與第一個即時交易日不發放，從次一個日曆月首個交易日開盤起每月撥入現金與累計投入本金（含跨週末與到期日邊界）', () => {
+  const game = createGame({ seed: 7, startDate: '2024-05-15', initialCash: 100000, monthlyContribution: 10000 });
+  // 預產歷史期間結束時仍只有初始資金
+  assert.equal(game.account().cash, 100000);
+  assert.equal(game.account().investedCapital, 100000);
+  assert.equal(game.account().totalPnl, 0);
+
+  // 第一個即時交易日（2024-05-15）開盤與整個五月都不發放
+  advance(game, 1);
+  assert.equal(game.candles().at(-1).date, '2024-05-15');
+  assert.equal(game.account().cash, 100000);
+  assert.equal(game.account().investedCapital, 100000);
+
+  advanceToDayClose(game, '2024-05-31');
+  assert.equal(game.account().cash, 100000);
+  assert.equal(game.account().investedCapital, 100000);
+
+  // 跨週末到 2024-06-03（週一，六月首個交易日）開盤立即發放
+  advance(game, 1);
+  assert.equal(game.candles().at(-1).date, '2024-06-03');
+  assert.equal(game.account().cash, 110000);
+  assert.equal(game.account().investedCapital, 110000);
+  assert.equal(game.account().totalPnl, 0);
+
+  // 到 2024-07-01 開盤再發放一次
+  advanceToDayClose(game, '2024-06-28');
+  advance(game, 1);
+  assert.equal(game.candles().at(-1).date, '2024-07-01');
+  assert.equal(game.account().cash, 120000);
+  assert.equal(game.account().investedCapital, 120000);
+
+  // 到期日若逢日曆月首個交易日開盤照常發放（2024-07-02 起算 30 年到期日為 2054-07-01 週三）
+  const expGame = createGame({ seed: 7, startDate: '2024-07-02', initialCash: 50000, monthlyContribution: 10000 });
+  advance(expGame, 1);
+  advanceToDayClose(expGame, '2054-06-30');
+  const beforeExpCash = expGame.account().cash;
+  const beforeExpInvested = expGame.account().investedCapital;
+  advance(expGame, 1);
+  assert.equal(expGame.candles().at(-1).date, '2054-07-01');
+  assert.equal(expGame.account().cash, beforeExpCash + 10000);
+  assert.equal(expGame.account().investedCapital, beforeExpInvested + 10000);
+  advance(expGame, TICKS_PER_DAY - 1);
+  assert.equal(expGame.expired(), true);
+  advance(expGame, 10);
+  assert.equal(expGame.account().cash, beforeExpCash + 10000);
+  assert.equal(expGame.account().investedCapital, beforeExpInvested + 10000);
+});
+
+test('總損益恆等式：跨月領取每月入金前後，總損益等於總資產減累計投入本金亦等於已實現損益加未實現損益', () => {
+  const game = createGame({ seed: 7, startDate: '2024-01-15', initialCash: 100000, monthlyContribution: 10000 });
+  advance(game, 10);
+  assert.equal(game.order({ side: 'buy', shares: 500 }).ok, true);
+  advance(game, TICKS_PER_DAY * 3);
+  assert.equal(game.order({ side: 'sell', shares: 200 }).ok, true);
+
+  advanceToDayClose(game, '2024-01-31');
+  const beforePrice = game.price();
+  const before = game.account();
+  assertTotalPnlIdentity(before);
+
+  // 跨入 2024-02-01 開盤領取每月入金
+  advance(game, 1);
+  assert.equal(game.candles().at(-1).date, '2024-02-01');
+  const after = game.account();
+  assert.equal(after.investedCapital, 110000);
+  assert.equal(after.cash, before.cash + 10000);
+  assertTotalPnlIdentity(after);
+  assert.ok(Math.abs((after.totalPnl - before.totalPnl) - 300 * (game.price() - beforePrice)) < 1e-6);
+});
+
+test('零元邊界與資產曲線：初始資金為 0 時買進持有不買進且報酬率維持 0，每月入金為 0 時使用者不追加入金', () => {
+  const zeroStart = createGame({ seed: 7, startDate: '2024-01-15', initialCash: 0, monthlyContribution: 10000 });
+  assert.equal(zeroStart.account().investedCapital, 0);
+  assert.deepEqual(zeroStart.returns(), { user: 0, buyHold: 0, dca: 0 });
+
+  // 第一個即時交易日（一月）內使用者累計投入本金與買進持有皆為 0，資產曲線不出現 NaN / Infinity
+  advance(zeroStart, 1);
+  assert.deepEqual(zeroStart.benchmarks().buyHold.trades, []);
+  assert.equal(zeroStart.benchmarks().buyHold.shares, 0);
+  assert.deepEqual(zeroStart.returns(), { user: 0, buyHold: 0, dca: 0 });
+
+  advanceToDayClose(zeroStart, '2024-01-31');
+  for (const pt of zeroStart.equityCurve()) {
+    assert.equal(Number.isFinite(pt.user), true);
+    assert.equal(Number.isFinite(pt.buyHold), true);
+    assert.equal(Number.isFinite(pt.dca), true);
+    assert.equal(pt.buyHold, 0);
+  }
+
+  // 2024-02-01 開盤使用者領到第一筆每月入金 10,000，買進持有仍維持 0 股與 0%
+  advance(zeroStart, 1);
+  assert.equal(zeroStart.candles().at(-1).date, '2024-02-01');
+  assert.equal(zeroStart.account().cash, 10000);
+  assert.equal(zeroStart.account().investedCapital, 10000);
+  assert.equal(zeroStart.benchmarks().buyHold.shares, 0);
+  assert.equal(zeroStart.returns().buyHold, 0);
+
+  zeroStart.order({ side: 'buy', shares: 50 });
+  advance(zeroStart, TICKS_PER_DAY);
+  const a = zeroStart.account();
+  const r = zeroStart.returns();
+  assert.ok(Math.abs(r.user - (a.totalAssets - 10000) / 10000) < 1e-12);
+  assert.equal(r.buyHold, 0);
+  assert.deepEqual(zeroStart.equityCurve().at(-1), Object.assign({ day: zeroStart.candles().length - 1 }, r));
+
+  // 存檔讀回後包含每月入金、累計投入本金與比較基準都一致
+  const saved = JSON.parse(JSON.stringify(zeroStart.save()));
+  const restored = restoreGame(saved);
+  assert.equal(restored.ok, true);
+  assert.deepEqual(observableState(restored.game), observableState(zeroStart));
+
+  // 每月入金為 0 時跨越多月也不追加資金
+  const zeroMonthly = createGame({ seed: 7, startDate: '2024-01-15', initialCash: 100000, monthlyContribution: 0 });
+  advance(zeroMonthly, TICKS_PER_DAY * 50);
+  assert.equal(zeroMonthly.account().cash, 100000);
+  assert.equal(zeroMonthly.account().investedCapital, 100000);
 });

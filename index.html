@@ -88,7 +88,8 @@
 <div id="restart-panel" hidden>
   <label>種子 <input id="new-seed" type="number" min="0" step="1" placeholder="隨機"></label>
   <label>起始價 <input id="new-price" type="number" min="0.01" step="any" value="100"></label>
-  <label>初始資金 <input id="new-cash" type="number" min="1" step="1" value="1000000"></label>
+  <label>初始資金 <input id="new-cash" type="number" min="0" step="1" value="1000000"></label>
+  <label>每月入金 <input id="new-monthly" type="number" min="0" step="1" value="10000"></label>
   <label>起始日期 <input id="new-date" type="date" min="1900-01-01" max="2999-12-31"></label>
   <button id="restart-confirm">確認開局（覆蓋目前存檔）</button>
   <button id="restart-cancel">取消</button>
@@ -130,7 +131,9 @@
     <dt>股數</dt><dd id="pos-shares"></dd>
     <dt>平均成本</dt><dd id="pos-avg"></dd>
     <dt>現金</dt><dd id="pos-cash"></dd>
+    <dt>累計投入本金</dt><dd id="pos-invested"></dd>
     <dt>總資產</dt><dd id="pos-total"></dd>
+    <dt>總損益</dt><dd id="pos-total-pnl"></dd>
     <dt>未實現損益</dt><dd id="pos-unrealized"></dd>
     <dt>已實現損益</dt><dd id="pos-realized"></dd>
   </dl>
@@ -318,20 +321,28 @@
     restartPanel.hidden = !restartPanel.hidden;
   };
   $('restart-cancel').onclick = () => { restartPanel.hidden = true; };
+  function parseNonNeg(id) {
+    const text = $(id).value.trim();
+    const n = Number(text);
+    return text !== '' && Number.isFinite(n) && n >= 0 ? n : null;
+  }
   $('restart-confirm').onclick = () => {
     const seedText = $('new-seed').value.trim();
     const seed = seedText === '' ? undefined : Number(seedText);
     const startPrice = Number($('new-price').value);
-    const initialCash = Number($('new-cash').value);
+    const initialCash = parseNonNeg('new-cash');
+    const monthlyContribution = parseNonNeg('new-monthly');
     const startDate = $('new-date').value;
     let error = '';
     if (seed !== undefined && !(Number.isInteger(seed) && seed >= 0 && seed < 4294967296)) error = '種子須為 0～4294967295 的整數';
     else if (!(startPrice > 0)) error = '起始價須大於 0';
-    else if (!(initialCash > 0)) error = '初始資金須大於 0';
+    else if (initialCash === null) error = '初始資金須大於等於 0';
+    else if (monthlyContribution === null) error = '每月入金須大於等於 0';
+    else if (initialCash + monthlyContribution <= 0) error = '初始資金與每月入金不可同時為 0';
     else if (!startDate || !$('new-date').checkValidity()) error = '起始日期須為 1900/01/01～2999/12/31';
     $('restart-msg').textContent = error;
     if (error) return;
-    startGame(createGame({ seed, startPrice, initialCash, startDate }));
+    startGame(createGame({ seed, startPrice, initialCash, monthlyContribution, startDate }));
     saveBlocked = false;
     saveGame();
     restartPanel.hidden = true;
@@ -353,7 +364,9 @@
     $('pos-shares').textContent = a.shares.toLocaleString('zh-TW');
     $('pos-avg').textContent = a.shares > 0 ? a.avgCost.toFixed(2) : '-';
     $('pos-cash').textContent = money(a.cash);
+    $('pos-invested').textContent = money(a.investedCapital);
     $('pos-total').textContent = money(a.totalAssets);
+    $('pos-total-pnl').textContent = money(a.totalPnl);
     $('pos-unrealized').textContent = money(a.unrealizedPnl);
     $('pos-realized').textContent = money(a.realizedPnl);
 

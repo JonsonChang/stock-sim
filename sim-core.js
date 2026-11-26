@@ -6,7 +6,7 @@
   'use strict';
 
   // 行情引擎版本號：修改亂數使用方式或模型參數時必須遞增，舊存檔會被拒絕（ADR-0001）
-  const ENGINE_VERSION = 3;
+  const ENGINE_VERSION = 4;
   const TICKS_PER_DAY = 270;
   const HISTORY_DAYS = 250;
   // GARCH 的長期日波動；加上空頭 σ×1.3 與跳躍後，整體日波動約 2%
@@ -116,7 +116,7 @@
   }
 
   function copyAccount(a) {
-    return { cash: a.cash, shares: a.shares, trades: a.trades.map(function (t) { return Object.assign({}, t); }) };
+    return { cash: a.cash, shares: a.shares, investedCapital: a.investedCapital, trades: a.trades.map(function (t) { return Object.assign({}, t); }) };
   }
 
   function createGame(options) {
@@ -147,9 +147,11 @@
     let jumpSize = 0;
     let tickInDay = TICKS_PER_DAY; // 尚未開始新的交易日
     const initialCash = opts.initialCash === undefined ? 1000000 : opts.initialCash;
+    const monthlyContribution = opts.monthlyContribution === undefined ? 10000 : opts.monthlyContribution;
 
     // 帳務：只讀行情、不碰亂數，所以市價單不會影響行情（ADR-0001）
     let cash = initialCash;
+    let investedCapital = initialCash;
     let shares = 0;
     let costBasis = 0; // 部位成本，含買進手續費
     let realizedPnl = 0;
@@ -157,14 +159,18 @@
     const tradeTicks = []; // 每筆成交在當日第幾個 tick，和 trades 對齊，讀檔重放時用
 
     // 比較基準：只讀行情、不碰亂數，所以不影響行情（ADR-0001）
-    const buyHold = { cash: initialCash, shares: 0, trades: [] };
-    const dca = { cash: initialCash, shares: 0, trades: [] };
+    const buyHold = { cash: initialCash, shares: 0, investedCapital: initialCash, trades: [] };
+    const dca = { cash: initialCash, shares: 0, investedCapital: initialCash, trades: [] };
     const closedCurve = []; // 已收盤的即時交易日的報酬率，在下一個交易日開盤前記下
 
-    // 以當下 tick 價計算使用者與比較基準的報酬率
+    // 以當下 tick 價計算使用者與比較基準的累計投入報酬率；累計投入本金為 0 時回傳 0
     function returns() {
-      function r(c, n) { return (c + n * price - initialCash) / initialCash; }
-      return { user: r(cash, shares), buyHold: r(buyHold.cash, buyHold.shares), dca: r(dca.cash, dca.shares) };
+      function r(c, n, invested) { return invested > 0 ? (c + n * price - invested) / invested : 0; }
+      return {
+        user: r(cash, shares, investedCapital),
+        buyHold: r(buyHold.cash, buyHold.shares, buyHold.investedCapital),
+        dca: r(dca.cash, dca.shares, dca.investedCapital),
+      };
     }
 
     // 最後一根 K 棒在當下 tick 價的資產曲線點；還在預產的歷史區段時回傳 null
@@ -183,10 +189,18 @@
       account.trades.push({ day: day, shares: n, price: price, fee: fee });
     }
 
+    // 次一個日曆月起於每月首個交易日開盤撥入使用者每月入金
+    function creditMonthlyContribution(day) {
+      if (day <= HISTORY_DAYS || monthlyContribution <= 0) return;
+      if (candles[day].date.slice(0, 7) === candles[day - 1].date.slice(0, 7)) return;
+      cash += monthlyContribution;
+      investedCapital += monthlyContribution;
+    }
+
     // 每個即時交易日開盤時執行比較基準的買進
     function openBenchmarks(day) {
       const liveDay = day - HISTORY_DAYS;
-      if (liveDay === 0) benchmarkBuy(buyHold, buyHold.cash, day);
+      if (liveDay === 0 && buyHold.cash > 0) benchmarkBuy(buyHold, buyHold.cash, day);
       if (liveDay % DCA_INTERVAL === 0 && liveDay / DCA_INTERVAL < DCA_PERIODS) {
         benchmarkBuy(dca, initialCash / DCA_PERIODS, day);
       }
@@ -257,7 +271,10 @@
       if (newDay) {
         candles.push({ date: formatDate(dateMs), open: price, high: price, low: price, close: price, volume: volume });
         tickInDay = 1;
-        if (candles.length > HISTORY_DAYS) openBenchmarks(candles.length - 1);
+        if (candles.length > HISTORY_DAYS) {
+          creditMonthlyContribution(candles.length - 1);
+          openBenchmarks(candles.length - 1);
+        }
         return;
       }
       const c = candles[candles.length - 1];
@@ -376,7 +393,7 @@
       return {
         version: ENGINE_VERSION,
         seed: seed,
-        settings: { startPrice: startPrice, initialCash: initialCash, startDate: startDate },
+        settings: { startPrice: startPrice, initialCash: initialCash, monthlyContribution: monthlyContribution, startDate: startDate },
         progress: progress(),
         trades: trades.map(function (t, i) { return { day: t.day, tick: tradeTicks[i], side: t.side, shares: t.shares }; }),
       };
@@ -384,11 +401,14 @@
 
     function account() {
       const marketValue = shares * price;
+      const totalAssets = cash + marketValue;
       return {
         shares: shares,
         avgCost: shares > 0 ? costBasis / shares : 0,
         cash: cash,
-        totalAssets: cash + marketValue,
+        investedCapital: investedCapital,
+        totalAssets: totalAssets,
+        totalPnl: totalAssets - investedCapital,
         unrealizedPnl: marketValue - costBasis,
         realizedPnl: realizedPnl,
       };
@@ -444,8 +464,16 @@
 
   // 由存檔還原：用種子重算行情到同一個 tick，途中在原本的 tick 重放交易紀錄
   function restoreGame(data) {
-    if (data.version !== ENGINE_VERSION) return { ok: false, reason: 'engine-version' };
-    const game = createGame({ seed: data.seed, startPrice: data.settings.startPrice, initialCash: data.settings.initialCash, startDate: data.settings.startDate });
+    if (!data || data.version !== ENGINE_VERSION || !data.settings || data.settings.monthlyContribution === undefined) {
+      return { ok: false, reason: 'engine-version' };
+    }
+    const game = createGame({
+      seed: data.seed,
+      startPrice: data.settings.startPrice,
+      initialCash: data.settings.initialCash,
+      monthlyContribution: data.settings.monthlyContribution,
+      startDate: data.settings.startDate,
+    });
     // 開局後的進度是 (HISTORY_DAYS - 1, TICKS_PER_DAY)；換算成從開局起推進的 tick 數
     function ticksTo(p) { return (p.day + 1 - HISTORY_DAYS) * TICKS_PER_DAY + p.tick - TICKS_PER_DAY; }
     let ticksDone = 0;
