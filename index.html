@@ -9,7 +9,18 @@
   header { display: flex; gap: 16px; align-items: center; padding: 8px 12px; flex-wrap: wrap; }
   button { background: #333; color: #ddd; border: 1px solid #555; padding: 4px 10px; cursor: pointer; }
   button.active { background: #555; border-color: #999; }
-  #chart { display: block; width: 100%; height: calc(100vh - 48px); }
+  main { display: flex; height: calc(100vh - 48px); }
+  #chart { display: block; flex: 3; min-width: 0; height: 100%; }
+  aside { flex: 1; min-width: 260px; padding: 8px 12px; overflow-y: auto; border-left: 1px solid #333; font-size: 13px; }
+  aside h3 { margin: 12px 0 6px; font-size: 14px; }
+  aside input { width: 90px; background: #222; color: #ddd; border: 1px solid #555; padding: 3px 6px; }
+  aside .row { display: flex; gap: 6px; align-items: center; margin: 4px 0; flex-wrap: wrap; }
+  aside dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 0; }
+  aside dd { margin: 0; text-align: right; }
+  #buy { background: #6b1d1d; } #sell { background: #1d4d2a; }
+  #order-msg { color: #ffa94d; min-height: 1.2em; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { padding: 2px 4px; text-align: right; border-bottom: 1px solid #222; }
 </style>
 </head>
 <body>
@@ -23,7 +34,39 @@
   <span>現價 <b id="price"></b></span>
   <span>種子 <b id="seed"></b></span>
 </header>
+<main>
 <canvas id="chart"></canvas>
+<aside>
+  <h3>市價單</h3>
+  <div class="row">
+    <input id="qty" type="number" min="1" step="1" value="1000"> 股
+    <button id="lot">1 張</button>
+    <button id="all-in">全部資金</button>
+  </div>
+  <div id="estimate"></div>
+  <div class="row">
+    <button id="buy">買進</button>
+    <button id="sell">賣出</button>
+  </div>
+  <div id="order-msg"></div>
+
+  <h3>部位</h3>
+  <dl>
+    <dt>股數</dt><dd id="pos-shares"></dd>
+    <dt>平均成本</dt><dd id="pos-avg"></dd>
+    <dt>現金</dt><dd id="pos-cash"></dd>
+    <dt>總資產</dt><dd id="pos-total"></dd>
+    <dt>未實現損益</dt><dd id="pos-unrealized"></dd>
+    <dt>已實現損益</dt><dd id="pos-realized"></dd>
+  </dl>
+
+  <h3>交易紀錄</h3>
+  <table>
+    <thead><tr><th>交易日</th><th>買/賣</th><th>股數</th><th>成交價</th><th>手續費</th><th>證交稅</th></tr></thead>
+    <tbody id="trades"></tbody>
+  </table>
+</aside>
+</main>
 <script src="sim-core.js"></script>
 <script>
   const { createGame, TICKS_PER_DAY } = SimCore;
@@ -50,6 +93,53 @@
     };
   });
 
+  const $ = (id) => document.getElementById(id);
+  const money = (n) => Math.round(n).toLocaleString('zh-TW');
+  const REJECT = {
+    'insufficient-cash': '現金不足',
+    'insufficient-shares': '持有股數不足',
+    'invalid-shares': '請輸入正整數股數',
+  };
+  const qtyInput = $('qty');
+  const qty = () => Number(qtyInput.value);
+  const validQty = () => Number.isInteger(qty()) && qty() > 0;
+
+  $('lot').onclick = () => { qtyInput.value = 1000; };
+  $('all-in').onclick = () => { qtyInput.value = game.maxBuyShares(); };
+  function placeOrder(side) {
+    const result = game.order({ side, shares: qty() });
+    $('order-msg').textContent = result.ok ? '' : REJECT[result.reason];
+  }
+  $('buy').onclick = () => placeOrder('buy');
+  $('sell').onclick = () => placeOrder('sell');
+
+  let shownTrades = -1;
+  function updatePanel() {
+    if (validQty()) {
+      const b = game.quote('buy', qty()), s = game.quote('sell', qty());
+      $('estimate').textContent =
+        `預估成交金額 ${money(b.amount)}；買進手續費 ${b.fee}；賣出手續費 ${s.fee}、證交稅 ${s.tax}`;
+    } else {
+      $('estimate').textContent = '';
+    }
+
+    const a = game.account();
+    $('pos-shares').textContent = a.shares.toLocaleString('zh-TW');
+    $('pos-avg').textContent = a.shares > 0 ? a.avgCost.toFixed(2) : '-';
+    $('pos-cash').textContent = money(a.cash);
+    $('pos-total').textContent = money(a.totalAssets);
+    $('pos-unrealized').textContent = money(a.unrealizedPnl);
+    $('pos-realized').textContent = money(a.realizedPnl);
+
+    const trades = game.trades();
+    if (trades.length !== shownTrades) {
+      shownTrades = trades.length;
+      $('trades').innerHTML = trades.reverse().map((t) =>
+        `<tr><td>${t.day + 1}</td><td>${t.side === 'buy' ? '買' : '賣'}</td><td>${t.shares}</td>` +
+        `<td>${t.price.toFixed(2)}</td><td>${t.fee}</td><td>${t.tax}</td></tr>`).join('');
+    }
+  }
+
   const canvas = document.getElementById('chart');
   const ctx = canvas.getContext('2d');
 
@@ -63,7 +153,9 @@
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
 
-    const visible = game.candles().slice(-VISIBLE_CANDLES); // 跟隨最新的 K 棒
+    const all = game.candles();
+    const visible = all.slice(-VISIBLE_CANDLES); // 跟隨最新的 K 棒
+    const firstDay = all.length - visible.length;
     const axisW = 60;
     const plotW = w - axisW;
     const priceH = h * 0.75, volTop = priceH + 8, volH = h - volTop;
@@ -100,7 +192,21 @@
       ctx.fillRect(x - bodyW / 2, h - vh, bodyW, vh);
     });
 
+    // 買賣點：▲ 買標在 K 棒下方，▼ 賣標在 K 棒上方
+    ctx.font = '12px system-ui';
+    ctx.textAlign = 'center';
+    for (const t of game.trades()) {
+      const c = visible[t.day - firstDay];
+      if (!c) continue;
+      const x = (t.day - firstDay) * slot + slot / 2;
+      ctx.fillStyle = '#fcc419';
+      if (t.side === 'buy') ctx.fillText('▲', x, y(c.low) + 14);
+      else ctx.fillText('▼', x, y(c.high) - 4);
+    }
+    ctx.textAlign = 'start';
+
     document.getElementById('price').textContent = game.price().toFixed(2);
+    updatePanel();
   }
 
   function frame(now) {
