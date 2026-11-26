@@ -1246,3 +1246,92 @@ test('比較基準一致性：定期定額以累計投入報酬率淨值套用�
   const peak = Math.max(...values);
   assert.ok(Math.abs(r.currentDrawdown - (values[values.length - 1] / peak - 1)) < 1e-12);
 });
+
+// 一筆成交的現金流：買進為負（成交金額 + 手續費），賣出為正（成交金額 − 手續費 − 證交稅）
+function cashFlow(t) {
+  return t.side === 'buy' ? -(t.price * t.shares + t.fee) : t.price * t.shares - t.fee - t.tax;
+}
+
+test('持倉回合：單回合完整買賣後計入已完結回合，統計勝率、最大盈虧與持有交易日數，無進行中部位', () => {
+  const game = createGame({ seed: 51, startDate: '2024-01-15', initialCash: 1000000, monthlyContribution: 0 });
+  advance(game, 10); // 第 1 個即時交易日盤中進場
+  const buy = game.order({ side: 'buy', shares: 1000 }).trade;
+  advance(game, TICKS_PER_DAY * 3); // 第 4 個即時交易日盤中出場
+  const sell = game.order({ side: 'sell', shares: 1000 }).trade;
+  const pnl = cashFlow(buy) + cashFlow(sell);
+  const s = game.report().tradeStats;
+  assert.equal(s.buyCount, 1);
+  assert.equal(s.sellCount, 1);
+  assert.equal(s.completedRounds, 1);
+  assert.equal(s.winRate, pnl > 0 ? 1 : 0);
+  assert.equal(s.avgHoldingDays, 4);
+  assert.ok(Math.abs((pnl > 0 ? s.maxRoundProfit : s.maxRoundLoss) - pnl) < 1e-9);
+  assert.equal(pnl > 0 ? s.maxRoundLoss : s.maxRoundProfit, null);
+  // 只有一個回合，必定缺少獲利或虧損回合，賺賠比無法定義
+  assert.equal(s.profitLossRatio, null);
+  assert.equal(s.openPosition, null);
+});
+
+test('持倉回合：分批加碼與部分減碼未歸零前不計入已完結回合，進行中部位顯示股數、持有交易日數、回合已實現與未實現損益', () => {
+  const game = createGame({ seed: 51, startDate: '2024-01-15', initialCash: 1000000, monthlyContribution: 0 });
+  advance(game, 10);
+  const b1 = game.order({ side: 'buy', shares: 1000 }).trade;
+  advance(game, TICKS_PER_DAY);
+  const b2 = game.order({ side: 'buy', shares: 500 }).trade;
+  advance(game, TICKS_PER_DAY);
+  const s1 = game.order({ side: 'sell', shares: 600 }).trade; // 第 3 個即時交易日部分減碼
+  advance(game, TICKS_PER_DAY * 2 + 50); // 第 5 個即時交易日盤中
+  // 平均成本法：1500 股的總成本依股數比例分攤到賣出的 600 股與剩下的 900 股
+  const cost = -cashFlow(b1) - cashFlow(b2);
+  const s = game.report().tradeStats;
+  assert.equal(s.buyCount, 2);
+  assert.equal(s.sellCount, 1);
+  assert.equal(s.completedRounds, 0);
+  for (const k of ['winRate', 'profitLossRatio', 'maxRoundProfit', 'maxRoundLoss', 'avgHoldingDays']) assert.equal(s[k], null);
+  const o = s.openPosition;
+  assert.equal(o.shares, 900);
+  assert.equal(o.holdingDays, 5);
+  assert.ok(Math.abs(o.realizedPnl - (cashFlow(s1) - (cost * 600) / 1500)) < 1e-6);
+  assert.ok(Math.abs(o.unrealizedPnl - (900 * game.price() - (cost * 900) / 1500)) < 1e-6);
+});
+
+test('持倉回合：多回合清倉歸零後再開新回合，勝率、賺賠比、最大獲利／虧損與平均持有交易日數符合獨立手算', () => {
+  const game = createGame({ seed: 51, startDate: '2024-01-15', initialCash: 1000000, monthlyContribution: 0 });
+  advance(game, 10);
+  // 五個回合，持有 3、6、4、9、2 個交易日；第 2 回合分兩次賣出，歸零時才完結
+  for (const [days, partial] of [[2, false], [5, true], [3, false], [8, false], [1, false]]) {
+    game.order({ side: 'buy', shares: 1000 });
+    if (partial) {
+      advance(game, TICKS_PER_DAY * 2);
+      game.order({ side: 'sell', shares: 400 });
+      advance(game, TICKS_PER_DAY * (days - 2));
+      game.order({ side: 'sell', shares: 600 });
+    } else {
+      advance(game, TICKS_PER_DAY * days);
+      game.order({ side: 'sell', shares: 1000 });
+    }
+    advance(game, TICKS_PER_DAY);
+  }
+  // 以每回合現金流加總獨立算出回合淨損益
+  const pnls = [];
+  let held = 0, flow = 0;
+  for (const t of game.trades()) {
+    flow += cashFlow(t);
+    held += t.side === 'buy' ? t.shares : -t.shares;
+    if (held === 0) { pnls.push(flow); flow = 0; }
+  }
+  const wins = pnls.filter((p) => p > 0);
+  const losses = pnls.filter((p) => p < 0);
+  assert.ok(wins.length > 0 && losses.length > 0);
+  const avg = (xs) => xs.reduce((a, b) => a + b, 0) / xs.length;
+  const s = game.report().tradeStats;
+  assert.equal(s.buyCount, 5);
+  assert.equal(s.sellCount, 6);
+  assert.equal(s.completedRounds, 5);
+  assert.equal(s.winRate, wins.length / 5);
+  assert.ok(Math.abs(s.profitLossRatio - avg(wins) / Math.abs(avg(losses))) < 1e-9);
+  assert.ok(Math.abs(s.maxRoundProfit - Math.max(...wins)) < 1e-6);
+  assert.ok(Math.abs(s.maxRoundLoss - Math.min(...losses)) < 1e-6);
+  assert.equal(s.avgHoldingDays, (3 + 6 + 4 + 9 + 2) / 5);
+  assert.equal(s.openPosition, null);
+});

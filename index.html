@@ -190,6 +190,17 @@
     <div class="scroll-x">
       <table><tbody id="report-user"></tbody></table>
     </div>
+    <h3>交易統計</h3>
+    <div class="scroll-x">
+      <table><tbody id="report-trades"></tbody></table>
+    </div>
+    <div class="note">勝率、賺賠比、單筆回合最大獲利／虧損與平均持有交易日數僅計入已完結的持倉回合（從空手買進到全數賣出歸零）；無法計算時顯示 —。</div>
+    <div id="report-open" hidden>
+      <h3>進行中部位狀態</h3>
+      <div class="scroll-x">
+        <table><tbody id="report-open-body"></tbody></table>
+      </div>
+    </div>
   </div>
 </div>
 <div id="backdrop"></div>
@@ -465,6 +476,26 @@
       ['累計手續費', money(u.totalFees)],
       ['累計證交稅', money(u.totalTax)],
     ].map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('');
+    const t = r.tradeStats;
+    const kv = (rows) => rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('');
+    $('report-trades').innerHTML = kv([
+      ['總買進次數', t.buyCount],
+      ['總賣出次數', t.sellCount],
+      ['已完結持倉回合數', t.completedRounds],
+      ['勝率', orDash(t.winRate, (v) => `${(v * 100).toFixed(2)}%`)],
+      ['賺賠比', orDash(t.profitLossRatio, (v) => v.toFixed(2))],
+      ['單筆回合最大獲利', orDash(t.maxRoundProfit, money)],
+      ['單筆回合最大虧損', orDash(t.maxRoundLoss, money)],
+      ['平均持有交易日數', orDash(t.avgHoldingDays, (v) => v.toFixed(1))],
+    ]);
+    const o = t.openPosition;
+    $('report-open').hidden = o === null;
+    $('report-open-body').innerHTML = o === null ? '' : kv([
+      ['部位股數', o.shares.toLocaleString('zh-TW')],
+      ['已持有交易日數', o.holdingDays],
+      ['現行回合已實現損益', money(o.realizedPnl)],
+      ['當下未實現損益', money(o.unrealizedPnl)],
+    ]);
   }
   function openReport() {
     if (playing) setPlaying(false);

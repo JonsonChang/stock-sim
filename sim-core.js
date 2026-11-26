@@ -477,6 +477,45 @@
         totalFees: trades.reduce(function (s, t) { return s + t.fee; }, 0),
         totalTax: trades.reduce(function (s, t) { return s + t.tax; }, 0),
       });
+      // 持倉回合：部位股數從 0 買進起算，到全數賣出歸零為止。回合已實現損益依平均成本法累計，
+      // 歸零時即等於回合淨損益（賣出淨收款 − 買進成本）
+      const rounds = [];
+      let held = 0, entryDay = 0, roundCost = 0, roundRealized = 0;
+      trades.forEach(function (t) {
+        if (held === 0) { entryDay = t.day; roundCost = 0; roundRealized = 0; }
+        const amount = t.price * t.shares;
+        if (t.side === 'buy') {
+          roundCost += amount + t.fee;
+          held += t.shares;
+        } else {
+          const soldCost = (roundCost * t.shares) / held;
+          roundRealized += amount - t.fee - t.tax - soldCost;
+          roundCost -= soldCost;
+          held -= t.shares;
+        }
+        if (held === 0) rounds.push({ pnl: roundRealized, holdingDays: t.day - entryDay + 1 });
+      });
+      const wins = rounds.filter(function (x) { return x.pnl > 0; });
+      const losses = rounds.filter(function (x) { return x.pnl < 0; });
+      const avgPnl = function (xs) { return xs.reduce(function (s, x) { return s + x.pnl; }, 0) / xs.length; };
+      const tradeStats = {
+        buyCount: trades.filter(function (t) { return t.side === 'buy'; }).length,
+        sellCount: trades.filter(function (t) { return t.side === 'sell'; }).length,
+        completedRounds: rounds.length,
+        // 以下僅計入已完結回合；無已完結回合（或缺少獲利／虧損回合）時為 null
+        winRate: rounds.length > 0 ? wins.length / rounds.length : null,
+        profitLossRatio: wins.length > 0 && losses.length > 0 ? avgPnl(wins) / Math.abs(avgPnl(losses)) : null,
+        maxRoundProfit: wins.length > 0 ? Math.max.apply(null, wins.map(function (x) { return x.pnl; })) : null,
+        maxRoundLoss: losses.length > 0 ? Math.min.apply(null, losses.map(function (x) { return x.pnl; })) : null,
+        avgHoldingDays: rounds.length > 0 ? rounds.reduce(function (s, x) { return s + x.holdingDays; }, 0) / rounds.length : null,
+        // 進行中部位：尚未全數賣出的現行回合
+        openPosition: held > 0 ? {
+          shares: held,
+          holdingDays: candles.length - 1 - entryDay + 1,
+          realizedPnl: roundRealized,
+          unrealizedPnl: a.unrealizedPnl,
+        } : null,
+      };
       // 模擬年度：從起始日期起算，每滿一個日曆年加一
       const d = currentDate || startDate;
       const simYear = Math.max(1, Number(d.slice(0, 4)) - Number(startDate.slice(0, 4)) - (d.slice(5) < startDate.slice(5) ? 1 : 0) + 1);
@@ -488,6 +527,7 @@
         simYear: simYear,
         expired: expired(),
         user: user,
+        tradeStats: tradeStats,
         buyHold: performance('buyHold', buyHold.cash, buyHold.shares, buyHold.investedCapital),
         dca: performance('dca', dca.cash, dca.shares, dca.investedCapital),
       };
