@@ -430,19 +430,30 @@
       const series = [{ date: startDate, user: 0, buyHold: 0, dca: 0 }].concat(curve.map(function (p) {
         return { date: candles[p.day].date, user: p.user, buyHold: p.buyHold, dca: p.dca };
       }));
-      // 依累計投入報酬率口徑（ADR-0002）以「1 + 報酬率」計算回撤、波動率與風險調整比率
-      function risk(key, annualizedReturn) {
-        let peak = 0, peakDate = null, maxDrawdown = 0, ddPeak = 0, ddPeakDate = null, troughIndex = -1, drawdown = 0;
-        const values = series.map(function (p) { return 1 + p[key]; });
-        values.forEach(function (v, i) {
-          if (v > peak) { peak = v; peakDate = series[i].date; }
-          drawdown = (v - peak) / peak;
-          if (drawdown < maxDrawdown) { maxDrawdown = drawdown; ddPeak = peak; ddPeakDate = peakDate; troughIndex = i; }
+      // 逐點回撤：依累計投入報酬率口徑（ADR-0002）以「1 + 報酬率」為淨值，
+      // 每點記錄當下相對歷史最高點（含起始基準點 1）的跌幅與該最高點的索引
+      const drawdowns = {};
+      ['user', 'buyHold', 'dca'].forEach(function (k) {
+        let peak = 0, peakIndex = -1;
+        drawdowns[k] = series.map(function (p, i) {
+          const v = 1 + p[k];
+          if (v > peak) { peak = v; peakIndex = i; }
+          return { value: v, peak: peak, peakIndex: peakIndex, drawdown: (v - peak) / peak };
         });
+      });
+      // 由逐點回撤推導最大回撤區間，並計算波動率與風險調整比率
+      function risk(key, annualizedReturn) {
+        const dd = drawdowns[key];
+        let maxDrawdown = 0, troughIndex = -1;
+        dd.forEach(function (d, i) {
+          if (d.drawdown < maxDrawdown) { maxDrawdown = d.drawdown; troughIndex = i; }
+        });
+        const trough = troughIndex >= 0 ? dd[troughIndex] : null;
         let recoveryDate = null;
-        for (let i = troughIndex + 1; troughIndex >= 0 && i < values.length; i++) {
-          if (values[i] >= ddPeak) { recoveryDate = series[i].date; break; }
+        for (let i = troughIndex + 1; trough && i < dd.length; i++) {
+          if (dd[i].value >= trough.peak) { recoveryDate = series[i].date; break; }
         }
+        const values = dd.map(function (d) { return d.value; });
         // 年化波動率：相鄰點日報酬率的樣本標準差 × √260；未滿 5 個即時交易日不計算
         let volatility = null;
         if (liveDays >= 5) {
@@ -454,10 +465,10 @@
         const ratioReady = volatility !== null && annualizedReturn !== null;
         return {
           maxDrawdown: maxDrawdown,
-          peakDate: ddPeakDate,
-          troughDate: troughIndex >= 0 ? series[troughIndex].date : null,
+          peakDate: trough ? series[trough.peakIndex].date : null,
+          troughDate: trough ? series[troughIndex].date : null,
           recoveryDate: recoveryDate,
-          currentDrawdown: drawdown,
+          currentDrawdown: dd[dd.length - 1].drawdown,
           annualizedVolatility: volatility,
           // 夏普比率（無風險利率 0%）與卡瑪比率；分母為 0 或年化報酬率為空值時不計算
           sharpeRatio: ratioReady && volatility > 0 ? annualizedReturn / volatility : null,
@@ -538,14 +549,10 @@
         ['user', 'buyHold', 'dca'].forEach(function (k) { row[k] = (1 + p[k]) / (1 + prevYearEnd[k]) - 1; });
       });
       if (yearlyReturns.length > 0 && !expired()) yearlyReturns[yearlyReturns.length - 1].inProgress = true;
-      // 報告曲線：每個即時交易日一點，含三方累積報酬率與當下回撤幅度（相對含起始基準點 1 在內的歷史最高點）
-      const peaks = { user: 1, buyHold: 1, dca: 1 };
-      const reportCurve = series.slice(1).map(function (p) {
+      // 報告曲線：每個即時交易日一點，含三方累積報酬率與當下回撤幅度（取自逐點回撤，略過起始基準點）
+      const reportCurve = series.slice(1).map(function (p, i) {
         const point = { date: p.date, user: p.user, buyHold: p.buyHold, dca: p.dca, drawdown: {} };
-        ['user', 'buyHold', 'dca'].forEach(function (k) {
-          peaks[k] = Math.max(peaks[k], 1 + p[k]);
-          point.drawdown[k] = (1 + p[k] - peaks[k]) / peaks[k];
-        });
+        ['user', 'buyHold', 'dca'].forEach(function (k) { point.drawdown[k] = drawdowns[k][i + 1].drawdown; });
         return point;
       });
       return {
