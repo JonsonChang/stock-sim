@@ -21,12 +21,41 @@
   aside .row { display: flex; gap: 6px; align-items: center; margin: 4px 0; flex-wrap: wrap; }
   aside dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 0; }
   aside dd { margin: 0; text-align: right; }
-  #buy { background: #6b1d1d; } #sell { background: #1d4d2a; }
+  #buy, #m-buy { background: #6b1d1d; } #sell, #m-sell { background: #1d4d2a; }
   #order-msg { color: #ffa94d; min-height: 1.2em; }
   .swatch { display: inline-block; width: 10px; height: 3px; vertical-align: middle; margin-right: 4px; }
   aside label { cursor: pointer; }
   table { width: 100%; border-collapse: collapse; }
   th, td { padding: 2px 4px; text-align: right; border-bottom: 1px solid #222; }
+  /* 手機版專用元素，桌面版不顯示 */
+  .m-only, .tabs, #m-actions, #backdrop, #sheet-close { display: none; }
+
+  @media (max-width: 768px) {
+    html { touch-action: pan-y; } /* 只允許上下捲動，避免兩指捏合或連點兩下誤觸頁面縮放 */
+    body { display: flex; flex-direction: column; height: 100vh; height: 100dvh; overflow: hidden; }
+    main { display: contents; }
+    #chart-wrap { order: 1; flex: none; height: 55vh; height: 55dvh; }
+    #chart { touch-action: none; } /* 圖表上的手勢全部交給圖表自己處理 */
+    header { order: 2; gap: 4px 10px; padding: 6px 8px; font-size: 13px; border-top: 1px solid #333; }
+    header .m-only { display: inline; }
+    aside { order: 3; flex: 1; min-width: 0; min-height: 0; padding: 0 8px 72px; border-left: none; border-top: 1px solid #333; }
+    aside input { font-size: 16px; } /* 小於 16px 時 iOS 聚焦輸入框會自動放大頁面 */
+    .tabs { display: flex; position: sticky; top: 0; z-index: 1; background: #111; }
+    .tabs button { flex: 1; padding: 8px; border-width: 0 0 2px; border-color: transparent; background: none; }
+    .tabs button.active { border-color: #ddd; background: none; }
+    aside section[data-tab] { display: none; }
+    aside section[data-tab].current { display: block; }
+    aside section[data-tab] h3 { display: none; }
+    #m-actions { display: flex; position: fixed; left: 0; right: 0; bottom: 0; gap: 8px; padding: 8px 8px calc(8px + env(safe-area-inset-bottom)); background: #111; border-top: 1px solid #333; }
+    #m-actions button { flex: 1; padding: 12px; font-size: 18px; }
+    #order { position: fixed; left: 0; right: 0; bottom: 0; z-index: 3; padding: 4px 12px calc(12px + env(safe-area-inset-bottom)); background: #1a1a1a; border-top: 1px solid #444; transform: translateY(100%); transition: transform 0.2s; }
+    body.sheet-open #order { transform: none; }
+    #order[data-side="buy"] #sell, #order[data-side="sell"] #buy { display: none; }
+    #order #buy, #order #sell { flex: 1; padding: 12px; font-size: 18px; }
+    #sheet-close { display: inline-block; float: right; margin-top: 8px; }
+    #backdrop { display: block; position: fixed; inset: 0; z-index: 2; background: rgba(0, 0, 0, 0.5); opacity: 0; pointer-events: none; transition: opacity 0.2s; }
+    body.sheet-open #backdrop { opacity: 1; pointer-events: auto; }
+  }
 </style>
 </head>
 <body>
@@ -39,6 +68,8 @@
   </span>
   <button id="reveal">揭曉：關</button>
   <span>現價 <b id="price"></b></span>
+  <span class="m-only">漲跌 <b id="change"></b></span>
+  <span class="m-only">總資產報酬 <b id="ret-bar"></b></span>
   <span>種子 <b id="seed"></b></span>
 </header>
 <main>
@@ -47,6 +78,13 @@
   <button id="latest" hidden>回到最新</button>
 </div>
 <aside>
+  <nav class="tabs">
+    <button data-tab-btn="position" class="active">部位</button>
+    <button data-tab-btn="performance">績效</button>
+    <button data-tab-btn="trades">交易紀錄</button>
+  </nav>
+  <section id="order" data-side="buy">
+  <button id="sheet-close">✕</button>
   <h3>市價單</h3>
   <div class="row">
     <input id="qty" type="number" min="1" step="1" value="1000"> 股
@@ -59,7 +97,9 @@
     <button id="sell">賣出</button>
   </div>
   <div id="order-msg"></div>
+  </section>
 
+  <section data-tab="position" class="current">
   <h3>部位</h3>
   <dl>
     <dt>股數</dt><dd id="pos-shares"></dd>
@@ -69,21 +109,31 @@
     <dt>未實現損益</dt><dd id="pos-unrealized"></dd>
     <dt>已實現損益</dt><dd id="pos-realized"></dd>
   </dl>
+  </section>
 
+  <section data-tab="performance">
   <h3>績效</h3>
   <dl>
     <dt><span class="swatch" style="background: var(--user)"></span>我的報酬率</dt><dd id="ret-user"></dd>
     <dt><label><input type="checkbox" id="show-buyHold" checked style="width: auto"><span class="swatch" style="background: var(--buyHold)"></span>買進持有</label></dt><dd id="ret-buyHold"></dd>
     <dt><label><input type="checkbox" id="show-dca" checked style="width: auto"><span class="swatch" style="background: var(--dca)"></span>定期定額</label></dt><dd id="ret-dca"></dd>
   </dl>
+  </section>
 
+  <section data-tab="trades">
   <h3>交易紀錄</h3>
   <table>
     <thead><tr><th>交易日</th><th>買/賣</th><th>股數</th><th>成交價</th><th>手續費</th><th>證交稅</th></tr></thead>
     <tbody id="trades"></tbody>
   </table>
+  </section>
 </aside>
 </main>
+<div id="backdrop"></div>
+<div id="m-actions">
+  <button id="m-buy">買進</button>
+  <button id="m-sell">賣出</button>
+</div>
 <script src="sim-core.js"></script>
 <script>
   const { createGame, TICKS_PER_DAY } = SimCore;
@@ -144,7 +194,28 @@
   function placeOrder(side) {
     const result = game.order({ side, shares: qty() });
     $('order-msg').textContent = result.ok ? '' : REJECT[result.reason];
+    if (result.ok) closeSheet();
   }
+
+  // 手機版：底部按鈕滑出市價單面板，面板只顯示按下的那一邊
+  function openSheet(side) {
+    $('order').dataset.side = side;
+    $('order-msg').textContent = '';
+    document.body.classList.add('sheet-open');
+  }
+  function closeSheet() { document.body.classList.remove('sheet-open'); }
+  $('m-buy').onclick = () => openSheet('buy');
+  $('m-sell').onclick = () => openSheet('sell');
+  $('sheet-close').onclick = closeSheet;
+  $('backdrop').onclick = closeSheet;
+
+  // 手機版：部位、績效、交易紀錄分頁切換
+  document.querySelectorAll('[data-tab-btn]').forEach((btn) => {
+    btn.onclick = () => {
+      document.querySelectorAll('[data-tab-btn]').forEach((b) => b.classList.toggle('active', b === btn));
+      document.querySelectorAll('section[data-tab]').forEach((s) => s.classList.toggle('current', s.dataset.tab === btn.dataset.tabBtn));
+    };
+  });
   $('buy').onclick = () => placeOrder('buy');
   $('sell').onclick = () => placeOrder('sell');
   for (const key of ['buyHold', 'dca']) {
@@ -172,6 +243,7 @@
 
     const r = game.returns();
     $('ret-user').textContent = pct(r.user);
+    $('ret-bar').textContent = pct(r.user);
     for (const key of ['buyHold', 'dca']) $(`ret-${key}`).textContent = showBenchmark[key] ? pct(r[key]) : '-';
 
     const trades = game.trades();
@@ -230,6 +302,67 @@
     canvas.classList.remove('dragging');
   });
   canvas.addEventListener('mousemove', (e) => { hoverX = e.offsetX; });
+
+  // 觸控：單指左右拖曳平移、兩指縮放、長按顯示 K 棒詳情
+  const LONG_PRESS_MS = 500, TOUCH_SLOP = 8;
+  let touch = null; // mode：pending（剛按下）、pan、press（長按中）、pinch
+  const touchX = (t) => t.clientX - canvas.getBoundingClientRect().left;
+  const pinchInfo = (a, b) => ({
+    dist: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY) || 1,
+    mid: Math.min((touchX(a) + touchX(b)) / 2, plotWidth()),
+  });
+  // 只計算放在圖表上的手指（targetTouches），按著底部按鈕的手指不算
+  function startPinch(e) {
+    const n = game.candles().length;
+    const { dist, mid } = pinchInfo(e.targetTouches[0], e.targetTouches[1]);
+    touch = { mode: 'pinch', dist, count: visibleCount(n), anchor: viewStart(n) + (mid / plotWidth()) * visibleCount(n) };
+  }
+  canvas.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    if (touch) clearTimeout(touch.timer);
+    hoverX = null;
+    if (e.targetTouches.length >= 2) { startPinch(e); return; }
+    const t = e.targetTouches[0];
+    touch = { mode: 'pending', x: touchX(t), y: t.clientY };
+    touch.timer = setTimeout(() => {
+      if (touch && touch.mode === 'pending') { touch.mode = 'press'; hoverX = touch.x; }
+    }, LONG_PRESS_MS);
+  }, { passive: false });
+  canvas.addEventListener('touchmove', (e) => {
+    e.preventDefault();
+    if (!touch) return;
+    const n = game.candles().length;
+    if (touch.mode === 'pinch') {
+      if (e.targetTouches.length < 2) return;
+      const { dist, mid } = pinchInfo(e.targetTouches[0], e.targetTouches[1]);
+      // 和滾輪縮放相同：跟隨時固定最右側為最新的 K 棒，未跟隨時兩指中點下的 K 棒保持不動
+      const next = Math.max(MIN_VISIBLE, touch.count * (touch.dist / dist));
+      view.count = next >= n ? Infinity : next;
+      if (view.start !== null) setStart(touch.anchor - (mid / plotWidth()) * visibleCount(n), n);
+      return;
+    }
+    const t = e.targetTouches[0];
+    const x = touchX(t);
+    if (touch.mode === 'press') { hoverX = x; return; }
+    if (touch.mode === 'pending') {
+      if (Math.hypot(x - touch.x, t.clientY - touch.y) < TOUCH_SLOP) return;
+      clearTimeout(touch.timer);
+      touch = { mode: 'pan', x, start: viewStart(n) };
+    }
+    setStart(touch.start - ((x - touch.x) / plotWidth()) * visibleCount(n), n);
+  }, { passive: false });
+  function endTouch(e) {
+    e.preventDefault();
+    if (!touch) return;
+    clearTimeout(touch.timer);
+    hoverX = null;
+    // 放開後剩下的手指重新起算手勢，避免畫面跳動
+    if (e.targetTouches.length === 0) touch = null;
+    else if (e.targetTouches.length >= 2) startPinch(e);
+    else touch = { mode: 'pan', x: touchX(e.targetTouches[0]), start: viewStart(game.candles().length) };
+  }
+  canvas.addEventListener('touchend', endTouch, { passive: false });
+  canvas.addEventListener('touchcancel', endTouch, { passive: false });
   canvas.addEventListener('mouseleave', () => { hoverX = null; });
 
   function draw() {
@@ -372,15 +505,22 @@
       ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
       const text = `交易日 ${hovered + 1}　開 ${c.open.toFixed(2)}　高 ${c.high.toFixed(2)}　低 ${c.low.toFixed(2)}　收 ${c.close.toFixed(2)}　量 ${c.volume}`;
       ctx.font = '12px system-ui';
+      // 窄螢幕放不下一行時拆成兩行
+      const lines = ctx.measureText(text).width + 20 > w
+        ? [`交易日 ${hovered + 1}　量 ${c.volume}`, `開 ${c.open.toFixed(2)}　高 ${c.high.toFixed(2)}　低 ${c.low.toFixed(2)}　收 ${c.close.toFixed(2)}`]
+        : [text];
       ctx.fillStyle = 'rgba(17, 17, 17, 0.85)';
-      ctx.fillRect(4, 4, ctx.measureText(text).width + 12, 22);
+      ctx.fillRect(4, 4, Math.max(...lines.map((l) => ctx.measureText(l).width)) + 12, 6 + lines.length * 16);
       ctx.fillStyle = '#ddd';
-      ctx.fillText(text, 10, 19);
+      lines.forEach((l, i) => ctx.fillText(l, 10, 19 + i * 16));
     }
 
     latestBtn.hidden = view.start === null;
 
     document.getElementById('price').textContent = game.price().toFixed(2);
+    const change = n > 1 ? game.price() / all[n - 2].close - 1 : 0; // 相對前一交易日收盤
+    $('change').textContent = pct(change);
+    $('change').style.color = change > 0 ? UP : change < 0 ? DOWN : '';
     updatePanel();
   }
 
