@@ -517,8 +517,27 @@
         } : null,
       };
       // 模擬年度：從起始日期起算，每滿一個日曆年加一
-      const d = currentDate || startDate;
-      const simYear = Math.max(1, Number(d.slice(0, 4)) - Number(startDate.slice(0, 4)) - (d.slice(5) < startDate.slice(5) ? 1 : 0) + 1);
+      function simYearOf(d) {
+        return Math.max(1, Number(d.slice(0, 4)) - Number(startDate.slice(0, 4)) - (d.slice(5) < startDate.slice(5) ? 1 : 0) + 1);
+      }
+      const simYear = simYearOf(currentDate || startDate);
+      // 分年報酬明細：每個模擬年度的區間報酬率 =（1 + 年末報酬率）÷（1 + 前一年末報酬率）− 1，
+      // 第 1 年以起始基準點 0% 起算，所以各年度連乘等於 1 + 總報酬率；最後一列在未到期時為進行中年度
+      const yearlyReturns = [];
+      let prevYearEnd = series[0];
+      series.forEach(function (p, i) {
+        if (i === 0) return;
+        const year = simYearOf(p.date);
+        let row = yearlyReturns[yearlyReturns.length - 1];
+        if (!row || row.year !== year) {
+          prevYearEnd = series[i - 1];
+          row = { year: year, startDate: p.date, endDate: p.date, inProgress: false };
+          yearlyReturns.push(row);
+        }
+        row.endDate = p.date;
+        ['user', 'buyHold', 'dca'].forEach(function (k) { row[k] = (1 + p[k]) / (1 + prevYearEnd[k]) - 1; });
+      });
+      if (yearlyReturns.length > 0 && !expired()) yearlyReturns[yearlyReturns.length - 1].inProgress = true;
       return {
         seed: seed,
         startDate: startDate,
@@ -528,6 +547,7 @@
         expired: expired(),
         user: user,
         tradeStats: tradeStats,
+        yearlyReturns: yearlyReturns,
         buyHold: performance('buyHold', buyHold.cash, buyHold.shares, buyHold.investedCapital),
         dca: performance('dca', dca.cash, dca.shares, dca.investedCapital),
       };

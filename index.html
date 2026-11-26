@@ -201,6 +201,14 @@
         <table><tbody id="report-open-body"></tbody></table>
       </div>
     </div>
+    <h3>分年報酬明細</h3>
+    <div class="scroll-x">
+      <table class="compare">
+        <thead><tr><th>模擬年度</th><th>期間</th><th><span class="swatch" style="background: var(--user)"></span>我的操作</th><th><span class="swatch" style="background: var(--buyHold)"></span>買進持有</th><th><span class="swatch" style="background: var(--dca)"></span>定期定額</th></tr></thead>
+        <tbody id="report-years"></tbody>
+      </table>
+    </div>
+    <div class="note">模擬年度從起始日期起算，每滿一個日曆年為一年度；各年度報酬率以「1 + 累計投入報酬率」的年末與前一年末比值計算，各年度 (1 + 報酬率) 連乘等於 1 + 總報酬率。進行中的年度為累計至今。</div>
   </div>
 </div>
 <div id="backdrop"></div>
@@ -496,6 +504,10 @@
       ['現行回合已實現損益', money(o.realizedPnl)],
       ['當下未實現損益', money(o.unrealizedPnl)],
     ]);
+    $('report-years').innerHTML = r.yearlyReturns.length === 0
+      ? '<tr><td colspan="5">尚未開始</td></tr>'
+      : r.yearlyReturns.map((y) => `<tr><td>第 ${y.year} 年${y.inProgress ? '（累計至今）' : ''}</td>`
+        + `<td>${fmtDate(y.startDate)}～${fmtDate(y.endDate)}</td>${cols.map((k) => `<td>${pct(y[k])}</td>`).join('')}</tr>`).join('');
   }
   function openReport() {
     if (playing) setPlaying(false);

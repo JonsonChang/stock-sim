@@ -1335,3 +1335,65 @@ test('持倉回合：多回合清倉歸零後再開新回合，勝率、賺賠�
   assert.equal(s.avgHoldingDays, (3 + 6 + 4 + 9 + 2) / 5);
   assert.equal(s.openPosition, null);
 });
+
+// 以資產曲線（累計投入報酬率）獨立算出某交易日的「1 + 報酬率」；date 為 null 表示起始基準點
+function growthAt(game, date, key) {
+  if (date === null) return 1;
+  const candles = game.candles();
+  const p = game.equityCurve().find((x) => candles[x.day].date === date);
+  return 1 + p[key];
+}
+
+test('分年報酬明細：起始日期非 1 月 1 日時依滿一個日曆年切分模擬年度，進行中年度報酬累計至今，各年度連乘等於總報酬', () => {
+  const game = createGame({ seed: 21, startDate: '2024-03-15', initialCash: 1000000, monthlyContribution: 10000 });
+  advance(game, 10);
+  game.order({ side: 'buy', shares: 3000 });
+  advance(game, TICKS_PER_DAY * 280 + 50); // 第 281 個即時交易日盤中
+  const r = game.report();
+  const rows = r.yearlyReturns;
+  assert.equal(rows.length, 2);
+  // 2024-03-15 滿一年是 2025-03-15（週六），第 2 年的第一個交易日是 2025-03-17
+  assert.deepEqual(rows.map(({ year, startDate, endDate, inProgress }) => ({ year, startDate, endDate, inProgress })), [
+    { year: 1, startDate: '2024-03-15', endDate: '2025-03-14', inProgress: false },
+    { year: 2, startDate: '2025-03-17', endDate: r.currentDate, inProgress: true },
+  ]);
+  for (const key of ['user', 'buyHold', 'dca']) {
+    const y1 = growthAt(game, '2025-03-14', key);
+    assert.ok(Math.abs(rows[0][key] - (y1 - 1)) < 1e-12, key);
+    assert.ok(Math.abs(rows[1][key] - ((1 + r[key].totalReturn) / y1 - 1)) < 1e-12, key);
+    const product = rows.reduce((s, row) => s * (1 + row[key]), 1);
+    assert.ok(Math.abs(product - (1 + r[key].totalReturn)) < 1e-12, key);
+  }
+});
+
+test('分年報酬明細：開局未推進時為空，第 1 個即時交易日盤中只有進行中的第 1 年且等於當下總報酬率', () => {
+  const game = createGame({ seed: 7, startDate: '2024-01-15', initialCash: 1000000, monthlyContribution: 10000 });
+  assert.deepEqual(game.report().yearlyReturns, []);
+  advance(game, 40);
+  const r = game.report();
+  assert.equal(r.yearlyReturns.length, 1);
+  const row = r.yearlyReturns[0];
+  assert.deepEqual([row.year, row.startDate, row.endDate, row.inProgress], [1, '2024-01-15', '2024-01-15', true]);
+  for (const key of ['user', 'buyHold', 'dca']) assert.ok(Math.abs(row[key] - r[key].totalReturn) < 1e-12, key);
+});
+
+test('分年報酬明細：到期時共 30 個模擬年度且皆已滿一年，年度首尾相接，三方連乘皆等於總報酬', () => {
+  const game = playToExpiry();
+  const r = game.report();
+  const rows = r.yearlyReturns;
+  assert.equal(rows.length, 30);
+  assert.deepEqual(rows.map((x) => x.year), Array.from({ length: 30 }, (_, i) => i + 1));
+  assert.ok(rows.every((x) => !x.inProgress));
+  assert.equal(rows[0].startDate, '2024-01-05');
+  assert.equal(rows[29].endDate, '2054-01-02');
+  // 第 N 年從起始日期滿 N − 1 年那天（遇週末順延）開始
+  assert.equal(rows[1].startDate, '2025-01-06');
+  assert.equal(rows[10].startDate, '2034-01-05');
+  const dates = game.candles().slice(HISTORY_DAYS).map((c) => c.date);
+  for (let i = 1; i < rows.length; i++) assert.equal(dates.indexOf(rows[i].startDate), dates.indexOf(rows[i - 1].endDate) + 1);
+  for (const key of ['user', 'buyHold', 'dca']) {
+    const product = rows.reduce((s, row) => s * (1 + row[key]), 1);
+    assert.ok(Math.abs(product / (1 + r[key].totalReturn) - 1) < 1e-9, key);
+    assert.ok(Math.abs(rows[5][key] - (growthAt(game, rows[5].endDate, key) / growthAt(game, rows[4].endDate, key) - 1)) < 1e-12, key);
+  }
+});
