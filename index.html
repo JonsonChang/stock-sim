@@ -10,7 +10,10 @@
   button { background: #333; color: #ddd; border: 1px solid #555; padding: 4px 10px; cursor: pointer; }
   button.active { background: #555; border-color: #999; }
   main { display: flex; height: calc(100vh - 48px); }
-  #chart { display: block; flex: 3; min-width: 0; height: 100%; }
+  #chart-wrap { position: relative; flex: 3; min-width: 0; }
+  #chart { display: block; width: 100%; height: 100%; cursor: crosshair; }
+  #chart.dragging { cursor: grabbing; }
+  #latest { position: absolute; right: 72px; top: 8px; }
   aside { flex: 1; min-width: 260px; padding: 8px 12px; overflow-y: auto; border-left: 1px solid #333; font-size: 13px; }
   aside h3 { margin: 12px 0 6px; font-size: 14px; }
   aside input { width: 90px; background: #222; color: #ddd; border: 1px solid #555; padding: 3px 6px; }
@@ -36,7 +39,10 @@
   <span>種子 <b id="seed"></b></span>
 </header>
 <main>
-<canvas id="chart"></canvas>
+<div id="chart-wrap">
+  <canvas id="chart"></canvas>
+  <button id="latest" hidden>回到最新</button>
+</div>
 <aside>
   <h3>市價單</h3>
   <div class="row">
@@ -72,7 +78,8 @@
 <script>
   const { createGame, TICKS_PER_DAY } = SimCore;
   const MS_PER_DAY_1X = 10000;
-  const VISIBLE_CANDLES = 80;
+  const MIN_VISIBLE = 20;
+  const AXIS_W = 60;
   const UP = '#e03131', DOWN = '#2f9e44';
   // 揭曉用的中性淡色，不使用紅綠，避免和 K 棒混淆
   const STATE_BANDS = {
@@ -156,6 +163,52 @@
 
   const canvas = document.getElementById('chart');
   const ctx = canvas.getContext('2d');
+  const latestBtn = document.getElementById('latest');
+
+  // 可視範圍：count 是可視 K 棒數（Infinity 表示全部）；start 是最左側的 K 棒索引，可為小數，null 表示跟隨最新的 K 棒
+  const view = { count: 80, start: null };
+  let hoverX = null;
+  let drag = null;
+
+  const plotWidth = () => canvas.clientWidth - AXIS_W;
+  const visibleCount = (n) => Math.min(view.count, n);
+  const viewStart = (n) => (view.start === null ? n - visibleCount(n) : view.start);
+  function setStart(start, n) {
+    const max = n - visibleCount(n);
+    const clamped = Math.max(0, start);
+    view.start = clamped >= max ? null : clamped;
+  }
+
+  latestBtn.onclick = () => { view.start = null; };
+
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const n = game.candles().length;
+    const mx = Math.min(e.offsetX, plotWidth());
+    // 未跟隨時，游標下的 K 棒位置在縮放前後保持不動；跟隨時固定最右側為最新的 K 棒
+    const anchor = viewStart(n) + (mx / plotWidth()) * visibleCount(n);
+    const deltaY = e.deltaMode === WheelEvent.DOM_DELTA_LINE ? e.deltaY * 33 : e.deltaY; // Firefox 以行為單位
+    const next = Math.max(MIN_VISIBLE, visibleCount(n) * Math.exp(deltaY * 0.001));
+    view.count = next >= n ? Infinity : next;
+    if (view.start !== null) setStart(anchor - (mx / plotWidth()) * visibleCount(n), n);
+  }, { passive: false });
+
+  canvas.addEventListener('mousedown', (e) => {
+    drag = { x: e.clientX, start: null }; // 起點等到真的移動才記錄，避免按下後才長出的 K 棒讓畫面跳一格
+    canvas.classList.add('dragging');
+  });
+  window.addEventListener('mousemove', (e) => {
+    if (!drag || e.clientX === drag.x) return;
+    const n = game.candles().length;
+    if (drag.start === null) drag.start = viewStart(n);
+    setStart(drag.start - ((e.clientX - drag.x) / plotWidth()) * visibleCount(n), n);
+  });
+  window.addEventListener('mouseup', () => {
+    drag = null;
+    canvas.classList.remove('dragging');
+  });
+  canvas.addEventListener('mousemove', (e) => { hoverX = e.offsetX; });
+  canvas.addEventListener('mouseleave', () => { hoverX = null; });
 
   function draw() {
     const dpr = window.devicePixelRatio || 1;
@@ -168,10 +221,12 @@
     ctx.clearRect(0, 0, w, h);
 
     const all = game.candles();
-    const visible = all.slice(-VISIBLE_CANDLES); // 跟隨最新的 K 棒
-    const firstDay = all.length - visible.length;
-    const axisW = 60;
-    const plotW = w - axisW;
+    const n = all.length;
+    const count = visibleCount(n);
+    const start = viewStart(n);
+    const first = Math.max(0, Math.floor(start));
+    const visible = all.slice(first, Math.min(n, Math.ceil(start + count)));
+    const plotW = plotWidth();
     const priceH = h * 0.75, volTop = priceH + 8, volH = h - volTop;
     let hi = -Infinity, lo = Infinity, maxVol = 0;
     for (const c of visible) {
@@ -182,7 +237,7 @@
     const pad = (hi - lo) * 0.05;
     hi += pad; lo -= pad;
     const y = (p) => ((hi - p) / (hi - lo)) * priceH;
-    const slot = plotW / VISIBLE_CANDLES;
+    const slot = plotW / count;
     const bodyW = Math.max(1, slot * 0.7);
 
     // 價格軸
@@ -196,30 +251,35 @@
       ctx.fillText(p.toFixed(2), plotW + 6, yy + 4);
     }
 
+    const xOf = (index) => (index - start) * slot + slot / 2;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(0, 0, plotW, h); ctx.clip(); // 平移到一半的 K 棒不要畫進價格軸
+
     if (reveal) {
-      const markers = game.dayMarkers().slice(-visible.length);
+      const markers = game.dayMarkers().slice(first, first + visible.length);
       // 市場狀態：連續相同狀態的區段畫一條背景帶，左上角加文字標籤
-      let start = 0;
+      let bandStart = 0;
       for (let i = 1; i <= markers.length; i++) {
-        if (i < markers.length && markers[i].state === markers[start].state) continue;
-        const band = STATE_BANDS[markers[start].state];
+        if (i < markers.length && markers[i].state === markers[bandStart].state) continue;
+        const band = STATE_BANDS[markers[bandStart].state];
+        const left = xOf(first + bandStart) - slot / 2;
         ctx.fillStyle = band.fill;
-        ctx.fillRect(start * slot, 0, (i - start) * slot, h);
+        ctx.fillRect(left, 0, (i - bandStart) * slot, h);
         ctx.fillStyle = '#aaa';
-        ctx.fillText(band.label, start * slot + 4, 14);
-        start = i;
+        ctx.fillText(band.label, Math.max(0, left) + 4, 14); // 區段起點平移出畫面時，標籤留在左緣
+        bandStart = i;
       }
       // 跳躍日：K 棒上方加標記
       ctx.fillStyle = '#ffd43b';
       ctx.textAlign = 'center';
       markers.forEach((m, i) => {
-        if (m.jump) ctx.fillText('⚡', i * slot + slot / 2, y(visible[i].high) - 6);
+        if (m.jump) ctx.fillText('⚡', xOf(first + i), y(visible[i].high) - 6);
       });
       ctx.textAlign = 'start';
     }
 
     visible.forEach((c, i) => {
-      const x = i * slot + slot / 2;
+      const x = xOf(first + i);
       ctx.fillStyle = ctx.strokeStyle = c.close >= c.open ? UP : DOWN;
       ctx.beginPath(); ctx.moveTo(x, y(c.high)); ctx.lineTo(x, y(c.low)); ctx.stroke();
       const top = y(Math.max(c.open, c.close));
@@ -232,14 +292,32 @@
     ctx.font = '12px system-ui';
     ctx.textAlign = 'center';
     for (const t of game.trades()) {
-      const c = visible[t.day - firstDay];
+      const c = visible[t.day - first];
       if (!c) continue;
-      const x = (t.day - firstDay) * slot + slot / 2;
+      const x = xOf(t.day);
       ctx.fillStyle = '#fcc419';
       if (t.side === 'buy') ctx.fillText('▲', x, y(c.low) + 14);
       else ctx.fillText('▼', x, y(c.high) - 4);
     }
     ctx.textAlign = 'start';
+    ctx.restore();
+
+    // 滑鼠所在 K 棒的詳細數字
+    const hovered = hoverX !== null && hoverX < plotW && !drag ? Math.floor(start + hoverX / slot) : -1;
+    if (hovered >= 0 && hovered < n) {
+      const c = all[hovered];
+      const x = xOf(hovered);
+      ctx.strokeStyle = '#666';
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+      const text = `交易日 ${hovered + 1}　開 ${c.open.toFixed(2)}　高 ${c.high.toFixed(2)}　低 ${c.low.toFixed(2)}　收 ${c.close.toFixed(2)}　量 ${c.volume}`;
+      ctx.font = '12px system-ui';
+      ctx.fillStyle = 'rgba(17, 17, 17, 0.85)';
+      ctx.fillRect(4, 4, ctx.measureText(text).width + 12, 22);
+      ctx.fillStyle = '#ddd';
+      ctx.fillText(text, 10, 19);
+    }
+
+    latestBtn.hidden = view.start === null;
 
     document.getElementById('price').textContent = game.price().toFixed(2);
     updatePanel();
