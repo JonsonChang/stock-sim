@@ -6,7 +6,7 @@
   'use strict';
 
   // 行情引擎版本號：修改亂數使用方式或模型參數時必須遞增，舊存檔會被拒絕（ADR-0001）
-  const ENGINE_VERSION = 1;
+  const ENGINE_VERSION = 2;
   const TICKS_PER_DAY = 270;
   const HISTORY_DAYS = 250;
   // GARCH 的長期日波動；加上空頭 σ×1.3 與跳躍後，整體日波動約 2%
