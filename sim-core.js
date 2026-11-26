@@ -5,6 +5,8 @@
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
+  // 行情引擎版本號：修改亂數使用方式或模型參數時必須遞增，舊存檔會被拒絕（ADR-0001）
+  const ENGINE_VERSION = 1;
   const TICKS_PER_DAY = 270;
   const HISTORY_DAYS = 250;
   // GARCH 的長期日波動；加上空頭 σ×1.3 與跳躍後，整體日波動約 2%
@@ -126,6 +128,7 @@
     let costBasis = 0; // 部位成本，含買進手續費
     let realizedPnl = 0;
     const trades = [];
+    const tradeTicks = []; // 每筆成交在當日第幾個 tick，和 trades 對齊，讀檔重放時用
 
     // 比較基準：只讀行情、不碰亂數，所以不影響行情（ADR-0001）
     const buyHold = { cash: initialCash, shares: 0, trades: [] };
@@ -269,7 +272,22 @@
       }
       const trade = { day: candles.length - 1, side: o.side, shares: o.shares, price: price, fee: q.fee, tax: q.tax };
       trades.push(trade);
+      tradeTicks.push(tickInDay);
       return { ok: true, trade: Object.assign({}, trade) };
+    }
+
+    // 進度：day 是當下 K 棒的索引，tick 是當日已經過的 tick 數（TICKS_PER_DAY 表示已收盤）
+    function progress() { return { day: candles.length - 1, tick: tickInDay }; }
+
+    // 存檔只記錄重算所需的資料，行情由種子重算（ADR-0001）
+    function save() {
+      return {
+        version: ENGINE_VERSION,
+        seed: seed,
+        settings: { startPrice: startPrice, initialCash: initialCash },
+        progress: progress(),
+        trades: trades.map(function (t, i) { return { day: t.day, tick: tradeTicks[i], side: t.side, shares: t.shares }; }),
+      };
     }
 
     function account() {
@@ -287,6 +305,8 @@
     return {
       seed: seed,
       tick: tick,
+      progress: progress,
+      save: save,
       order: order,
       quote: quote,
       maxBuyShares: maxBuyShares,
@@ -313,5 +333,33 @@
     };
   }
 
-  return { createGame: createGame, TICKS_PER_DAY: TICKS_PER_DAY, HISTORY_DAYS: HISTORY_DAYS };
+  // 由存檔還原：用種子重算行情到同一個 tick，途中在原本的 tick 重放交易紀錄
+  function restoreGame(data) {
+    if (data.version !== ENGINE_VERSION) return { ok: false, reason: 'engine-version' };
+    const game = createGame({ seed: data.seed, startPrice: data.settings.startPrice, initialCash: data.settings.initialCash });
+    // 開局後的進度是 (HISTORY_DAYS - 1, TICKS_PER_DAY)；換算成從開局起推進的 tick 數
+    function ticksTo(p) { return (p.day + 1 - HISTORY_DAYS) * TICKS_PER_DAY + p.tick - TICKS_PER_DAY; }
+    let ticksDone = 0;
+    function advanceTo(p) {
+      const target = ticksTo(p);
+      while (ticksDone < target) {
+        game.tick();
+        ticksDone++;
+      }
+    }
+    for (const t of data.trades) {
+      advanceTo(t);
+      game.order({ side: t.side, shares: t.shares });
+    }
+    advanceTo(data.progress);
+    return { ok: true, game: game };
+  }
+
+  return {
+    createGame: createGame,
+    restoreGame: restoreGame,
+    ENGINE_VERSION: ENGINE_VERSION,
+    TICKS_PER_DAY: TICKS_PER_DAY,
+    HISTORY_DAYS: HISTORY_DAYS,
+  };
 });

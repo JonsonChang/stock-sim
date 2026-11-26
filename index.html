@@ -27,6 +27,10 @@
   aside label { cursor: pointer; }
   table { width: 100%; border-collapse: collapse; }
   th, td { padding: 2px 4px; text-align: right; border-bottom: 1px solid #222; }
+  #notice, #restart-msg { color: #ffa94d; }
+  #restart-panel { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 6px 12px; border-top: 1px solid #333; font-size: 13px; }
+  #restart-panel[hidden] { display: none; }
+  #restart-panel input { width: 110px; background: #222; color: #ddd; border: 1px solid #555; padding: 3px 6px; }
 </style>
 </head>
 <body>
@@ -40,7 +44,17 @@
   <button id="reveal">揭曉：關</button>
   <span>現價 <b id="price"></b></span>
   <span>種子 <b id="seed"></b></span>
+  <button id="restart">重新開局</button>
+  <span id="notice" hidden></span>
 </header>
+<div id="restart-panel" hidden>
+  <label>種子 <input id="new-seed" type="number" min="0" step="1" placeholder="隨機"></label>
+  <label>起始價 <input id="new-price" type="number" min="0.01" step="any" value="100"></label>
+  <label>初始資金 <input id="new-cash" type="number" min="1" step="1" value="1000000"></label>
+  <button id="restart-confirm">確認開局（覆蓋目前存檔）</button>
+  <button id="restart-cancel">取消</button>
+  <span id="restart-msg"></span>
+</div>
 <main>
 <div id="chart-wrap">
   <canvas id="chart"></canvas>
@@ -86,7 +100,8 @@
 </main>
 <script src="sim-core.js"></script>
 <script>
-  const { createGame, TICKS_PER_DAY } = SimCore;
+  const { createGame, restoreGame, TICKS_PER_DAY } = SimCore;
+  const SAVE_KEY = 'stock-sim-save';
   const MS_PER_DAY_1X = 10000;
   const MIN_VISIBLE = 20;
   const AXIS_W = 60;
@@ -101,7 +116,8 @@
   // 資產曲線的線色，和績效區的色塊一致
   const SERIES_COLORS = { user: '#4dabf7', buyHold: '#da77f2', dca: '#ffa94d' };
 
-  const game = createGame();
+  const $ = (id) => document.getElementById(id);
+  let game;
   const showBenchmark = { buyHold: true, dca: true };
   let playing = true;
   let reveal = false;
@@ -109,26 +125,40 @@
   let pendingTicks = 0;
   let lastTime = null;
 
-  document.getElementById('seed').textContent = game.seed;
-  const playBtn = document.getElementById('play');
-  playBtn.onclick = () => {
-    playing = !playing;
+  // 舊存檔因引擎版本不符而無法讀取時，在使用者確認重新開局前不覆蓋它
+  let saveBlocked = false;
+
+  // 每個瀏覽器只有一份存檔：模擬核心的存檔資料加上介面設定（ADR-0001）
+  function saveGame() {
+    if (saveBlocked) return;
+    try {
+      localStorage.setItem(SAVE_KEY, JSON.stringify({ game: game.save(), ui: { speed, showBenchmark, reveal } }));
+    } catch (e) { /* 無痕模式或空間不足時就不存 */ }
+  }
+  function loadSave() {
+    try { return JSON.parse(localStorage.getItem(SAVE_KEY)); } catch (e) { return null; }
+  }
+
+  const playBtn = $('play');
+  function setPlaying(p) {
+    playing = p;
     playBtn.textContent = playing ? '暫停' : '播放';
-  };
-  const revealBtn = document.getElementById('reveal');
-  revealBtn.onclick = () => {
-    reveal = !reveal;
+  }
+  playBtn.onclick = () => setPlaying(!playing);
+  const revealBtn = $('reveal');
+  function setReveal(r) {
+    reveal = r;
     revealBtn.textContent = reveal ? '揭曉：開' : '揭曉：關';
     revealBtn.classList.toggle('active', reveal);
-  };
+  }
+  revealBtn.onclick = () => setReveal(!reveal);
+  function setSpeed(s) {
+    speed = s;
+    document.querySelectorAll('[data-speed]').forEach((b) => b.classList.toggle('active', Number(b.dataset.speed) === s));
+  }
   document.querySelectorAll('[data-speed]').forEach((btn) => {
-    btn.onclick = () => {
-      speed = Number(btn.dataset.speed);
-      document.querySelectorAll('[data-speed]').forEach((b) => b.classList.toggle('active', b === btn));
-    };
+    btn.onclick = () => setSpeed(Number(btn.dataset.speed));
   });
-
-  const $ = (id) => document.getElementById(id);
   const money = (n) => Math.round(n).toLocaleString('zh-TW');
   const REJECT = {
     'insufficient-cash': '現金不足',
@@ -144,12 +174,45 @@
   function placeOrder(side) {
     const result = game.order({ side, shares: qty() });
     $('order-msg').textContent = result.ok ? '' : REJECT[result.reason];
+    if (result.ok) saveGame();
   }
   $('buy').onclick = () => placeOrder('buy');
   $('sell').onclick = () => placeOrder('sell');
   for (const key of ['buyHold', 'dca']) {
     $(`show-${key}`).onchange = (e) => { showBenchmark[key] = e.target.checked; };
   }
+
+  // 換一局時重設和舊局綁在一起的介面狀態
+  function startGame(g) {
+    game = g;
+    $('seed').textContent = game.seed;
+    $('order-msg').textContent = '';
+    shownTrades = -1;
+    view.start = null;
+    pendingTicks = 0;
+  }
+
+  // 重新開局：頁面內的設定區與確認按鈕，不使用 alert／confirm
+  const restartPanel = $('restart-panel');
+  $('restart').onclick = () => { restartPanel.hidden = !restartPanel.hidden; };
+  $('restart-cancel').onclick = () => { restartPanel.hidden = true; };
+  $('restart-confirm').onclick = () => {
+    const seedText = $('new-seed').value.trim();
+    const seed = seedText === '' ? undefined : Number(seedText);
+    const startPrice = Number($('new-price').value);
+    const initialCash = Number($('new-cash').value);
+    let error = '';
+    if (seed !== undefined && !(Number.isInteger(seed) && seed >= 0 && seed < 4294967296)) error = '種子須為 0～4294967295 的整數';
+    else if (!(startPrice > 0)) error = '起始價須大於 0';
+    else if (!(initialCash > 0)) error = '初始資金須大於 0';
+    $('restart-msg').textContent = error;
+    if (error) return;
+    startGame(createGame({ seed, startPrice, initialCash }));
+    saveBlocked = false;
+    saveGame();
+    restartPanel.hidden = true;
+    $('notice').hidden = true;
+  };
   const pct = (r) => `${r > 0 ? '+' : ''}${(r * 100).toFixed(2)}%`;
 
   let shownTrades = -1;
@@ -391,11 +454,36 @@
       while (pendingTicks >= 1) {
         game.tick();
         pendingTicks--;
+        if (game.progress().tick === TICKS_PER_DAY) saveGame(); // 交易日收盤時存檔
       }
     }
     lastTime = now;
     draw();
     requestAnimationFrame(frame);
+  }
+
+  document.addEventListener('visibilitychange', () => { if (document.hidden) saveGame(); });
+  window.addEventListener('pagehide', saveGame);
+
+  // 開啟時讀檔，回到同一個 tick，一律處於暫停狀態
+  const saved = loadSave();
+  if (saved) {
+    setSpeed(saved.ui.speed);
+    setReveal(saved.ui.reveal);
+    for (const key of ['buyHold', 'dca']) $(`show-${key}`).checked = showBenchmark[key] = saved.ui.showBenchmark[key];
+    const restored = restoreGame(saved.game);
+    if (restored.ok) {
+      startGame(restored.game);
+    } else {
+      $('notice').textContent = '行情引擎已更新，需重新開局';
+      $('notice').hidden = false;
+      restartPanel.hidden = false;
+      saveBlocked = true;
+      startGame(createGame());
+    }
+    setPlaying(false);
+  } else {
+    startGame(createGame());
   }
   requestAnimationFrame(frame);
 </script>
