@@ -483,24 +483,6 @@ test('引擎版本號不符時拒絕讀檔', () => {
   assert.deepEqual(restoreGame(Object.assign({}, save, { version: undefined })), { ok: false, reason: 'engine-version' });
 });
 
-test('5,000 個交易日的存檔，在 Node 中重算時間小於 1 秒', () => {
-  const game = createGame({ seed: 5 });
-  for (let day = 0; day < 5000; day++) {
-    advance(game, TICKS_PER_DAY);
-    if (day % 50 === 0) game.order({ side: day % 100 === 0 ? 'buy' : 'sell', shares: 1000 });
-  }
-  const save = JSON.parse(JSON.stringify(game.save()));
-
-  const startedAt = performance.now();
-  const restored = restoreGame(save);
-  const elapsed = performance.now() - startedAt;
-
-  assert.equal(restored.ok, true);
-  assert.deepEqual(restored.game.progress(), { day: HISTORY_DAYS + 4999, tick: TICKS_PER_DAY });
-  assert.deepEqual(restored.game.account(), game.account());
-  assert.ok(elapsed < 1000, `重算花了 ${Math.round(elapsed)} ms`);
-});
-
 function weekday(date) {
   return new Date(`${date}T00:00:00Z`).getUTCDay();
 }
@@ -544,4 +526,62 @@ test('日曆日期：起始日期寫進存檔，讀回後日期序列相同', ()
 test('加入日曆日期之前的舊存檔（引擎版本 2、沒有起始日期）被拒絕讀檔', () => {
   const old = { version: 2, seed: 7, settings: { startPrice: 100, initialCash: 1000000 }, progress: { day: HISTORY_DAYS - 1, tick: TICKS_PER_DAY }, trades: [] };
   assert.deepEqual(restoreGame(old), { ok: false, reason: 'engine-version' });
+});
+
+// 模擬期限：起始日期 2024-01-05（週五）滿 30 年是 2054-01-05（週一），前一個交易日是 2054-01-02（週五）
+// 推進到期要算 30 年行情，同一局給下面幾個測試共用
+let expiredGame = null;
+function playToExpiry() {
+  if (expiredGame) return expiredGame;
+  const game = createGame({ seed: 5, startDate: '2024-01-05' });
+  let lastTradeDay = -1;
+  while (!game.expired()) {
+    game.tick();
+    const { day, tick } = game.progress();
+    if (tick === 100 && day % 50 === 0 && day !== lastTradeDay) {
+      lastTradeDay = day;
+      game.order({ side: day % 100 === 0 ? 'buy' : 'sell', shares: 1000 });
+    }
+  }
+  expiredGame = game;
+  return game;
+}
+
+test('模擬期限：起始日期滿 30 年的前一個交易日收盤時到期，之前都未到期', () => {
+  const fresh = createGame({ seed: 5, startDate: '2024-01-05' });
+  assert.equal(fresh.expired(), false);
+  const game = playToExpiry(); // 迴圈停在第一個到期的 tick，所以之前的 tick 都未到期
+  assert.equal(game.candles().at(-1).date, '2054-01-02');
+  assert.equal(game.progress().tick, TICKS_PER_DAY);
+  assert.equal(game.expired(), true);
+});
+
+test('模擬期限：到期後推進 tick 不改變 K 棒、進度、價格與資產曲線', () => {
+  const game = playToExpiry();
+  const before = observableState(game);
+  advance(game, TICKS_PER_DAY * 3);
+  assert.deepEqual(observableState(game), before);
+});
+
+test('模擬期限：到期後下單一律拒絕，帳務不變', () => {
+  const game = playToExpiry();
+  const before = observableState(game);
+  assert.deepEqual(game.order({ side: 'buy', shares: 1 }), { ok: false, reason: 'expired' });
+  assert.deepEqual(game.order({ side: 'sell', shares: 1 }), { ok: false, reason: 'expired' });
+  assert.deepEqual(observableState(game), before);
+});
+
+test('模擬期限：到期的 30 年存檔讀回仍為到期，在 Node 中重算時間小於 3 秒', () => {
+  const game = playToExpiry();
+  const save = JSON.parse(JSON.stringify(game.save()));
+  assert.ok(save.trades.length > 100);
+
+  const startedAt = performance.now();
+  const restored = restoreGame(save);
+  const elapsed = performance.now() - startedAt;
+
+  assert.equal(restored.ok, true);
+  assert.equal(restored.game.expired(), true);
+  assert.deepEqual(observableState(restored.game), observableState(game));
+  assert.ok(elapsed < 3000, `重算花了 ${Math.round(elapsed)} ms`);
 });

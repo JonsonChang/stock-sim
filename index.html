@@ -10,6 +10,7 @@
   header { display: flex; gap: 16px; align-items: center; padding: 8px 12px; flex-wrap: wrap; }
   button { background: #333; color: #ddd; border: 1px solid #555; padding: 4px 10px; cursor: pointer; }
   button.active { background: #555; border-color: #999; }
+  button:disabled { opacity: 0.4; cursor: default; }
   main { display: flex; height: calc(100vh - 48px); }
   #chart-wrap { position: relative; flex: 3; min-width: 0; }
   #chart { display: block; width: 100%; height: 100%; cursor: crosshair; }
@@ -27,7 +28,7 @@
   aside label { cursor: pointer; }
   table { width: 100%; border-collapse: collapse; }
   th, td { padding: 2px 4px; text-align: right; border-bottom: 1px solid #222; }
-  #notice, #restart-msg { color: #ffa94d; }
+  #notice, #restart-msg, #expired { color: #ffa94d; }
   #restart-panel { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 6px 12px; border-top: 1px solid #333; font-size: 13px; }
   #restart-panel[hidden] { display: none; }
   #restart-panel input { width: 110px; background: #222; color: #ddd; border: 1px solid #555; padding: 3px 6px; }
@@ -79,6 +80,7 @@
   <span>種子 <b id="seed"></b></span>
   <button id="restart">重新開局</button>
   <span id="notice" hidden></span>
+  <span id="expired" hidden>已達模擬期限</span>
 </header>
 <div id="restart-panel" hidden>
   <label>種子 <input id="new-seed" type="number" min="0" step="1" placeholder="隨機"></label>
@@ -226,6 +228,7 @@
     'insufficient-cash': '現金不足',
     'insufficient-shares': '持有股數不足',
     'invalid-shares': '請輸入正整數股數',
+    'expired': '已達模擬期限',
   };
   const qtyInput = $('qty');
   const qty = () => Number(qtyInput.value);
@@ -627,17 +630,28 @@
     updatePanel(all);
   }
 
+  // 到期後自動暫停，停用播放、速度切換與下單按鈕；圖表、面板與重新開局照常可用
+  function updateExpired() {
+    const ended = game.expired();
+    if (ended && playing) setPlaying(false);
+    $('expired').hidden = !ended;
+    for (const id of ['play', 'buy', 'sell', 'm-buy', 'm-sell']) $(id).disabled = ended;
+    document.querySelectorAll('[data-speed]').forEach((b) => { b.disabled = ended; });
+  }
+
   function frame(now) {
     if (lastTime !== null && playing) {
       const dt = Math.min(now - lastTime, 100); // 分頁切回來時不要一次補一大堆 tick
       pendingTicks += (dt * TICKS_PER_DAY * speed) / MS_PER_DAY_1X;
-      while (pendingTicks >= 1) {
+      // 到期後 tick() 不再推進、進度停在收盤，不擋住的話每圈都會觸發收盤存檔
+      while (pendingTicks >= 1 && !game.expired()) {
         game.tick();
         pendingTicks--;
         if (game.progress().tick === TICKS_PER_DAY) saveGame(); // 交易日收盤時存檔
       }
     }
     lastTime = now;
+    updateExpired();
     draw();
     requestAnimationFrame(frame);
   }
@@ -651,21 +665,27 @@
     setSpeed(saved.ui.speed);
     setReveal(saved.ui.reveal);
     for (const key of ['buyHold', 'dca']) $(`show-${key}`).checked = showBenchmark[key] = saved.ui.showBenchmark[key];
-    const restored = restoreGame(saved.game);
-    if (restored.ok) {
-      startGame(restored.game);
-    } else {
-      $('notice').textContent = '行情引擎已更新，需重新開局';
-      $('notice').hidden = false;
-      restartPanel.hidden = false;
-      saveBlocked = true;
-      startGame(createGame());
-    }
     setPlaying(false);
+    // 長局重算要花一點時間：先讓「讀取中…」畫上畫面，再開始重算
+    $('notice').textContent = '讀取中…';
+    $('notice').hidden = false;
+    requestAnimationFrame(() => setTimeout(() => {
+      const restored = restoreGame(saved.game);
+      if (restored.ok) {
+        $('notice').hidden = true;
+        startGame(restored.game);
+      } else {
+        $('notice').textContent = '行情引擎已更新，需重新開局';
+        restartPanel.hidden = false;
+        saveBlocked = true;
+        startGame(createGame());
+      }
+      requestAnimationFrame(frame);
+    }));
   } else {
     startGame(createGame());
+    requestAnimationFrame(frame);
   }
-  requestAnimationFrame(frame);
 </script>
 </body>
 </html>

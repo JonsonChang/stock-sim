@@ -23,6 +23,8 @@
   // 定期定額：每 20 個交易日投入初始資金的 1/12
   const DCA_INTERVAL = 20;
   const DCA_PERIODS = 12;
+  // 模擬期限：一局最多進行 30 年，從起始日期（第一個即時交易日）起算，不含預產歷史
+  const SIM_YEARS = 30;
 
   // 市場狀態：μ 是每個交易日的對數漂移，stay 是每個交易日維持原狀態的機率
   // 多頭較持久（平均一段約 111 個交易日，空頭與盤整約 33 個），長期約 63% 時間處於多頭，年化漂移約 +7%～8%（參考 VT）
@@ -125,6 +127,10 @@
     let dateMs = parseDate(opts.startDate === undefined ? today() : opts.startDate);
     if (isWeekend(dateMs)) dateMs = nextWeekday(dateMs, 1);
     const startDate = formatDate(dateMs);
+    // 到期日：起始日期滿 SIM_YEARS 年那天的前一個交易日
+    const anniversary = new Date(dateMs);
+    anniversary.setUTCFullYear(anniversary.getUTCFullYear() + SIM_YEARS);
+    const endDate = formatDate(nextWeekday(anniversary.getTime(), -1));
     for (let i = 0; i <= HISTORY_DAYS; i++) dateMs = nextWeekday(dateMs, -1); // 第一根 K 棒的前一個平日
     const rng = makeRng(seed);
     const studentT = makeStudentT(rng);
@@ -229,7 +235,11 @@
       return inc;
     }
 
+    // 到期日收盤後就到期：行情不再推進，也不能再下單
+    function expired() { return tickInDay === TICKS_PER_DAY && candles.length > HISTORY_DAYS && candles[candles.length - 1].date === endDate; }
+
     function tick() {
+      if (expired()) return;
       const newDay = tickInDay === TICKS_PER_DAY;
       if (newDay) {
         const closed = latestCurvePoint();
@@ -276,6 +286,7 @@
     }
 
     function order(o) {
+      if (expired()) return { ok: false, reason: 'expired' };
       if (!Number.isInteger(o.shares) || o.shares <= 0) return { ok: false, reason: 'invalid-shares' };
       const q = quote(o.side, o.shares);
       if (o.side === 'buy') {
@@ -328,6 +339,7 @@
       startDate: startDate,
       tick: tick,
       progress: progress,
+      expired: expired,
       save: save,
       order: order,
       quote: quote,
