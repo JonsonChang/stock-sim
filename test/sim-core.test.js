@@ -500,3 +500,48 @@ test('5,000 個交易日的存檔，在 Node 中重算時間小於 1 秒', () =>
   assert.deepEqual(restored.game.account(), game.account());
   assert.ok(elapsed < 1000, `重算花了 ${Math.round(elapsed)} ms`);
 });
+
+function weekday(date) {
+  return new Date(`${date}T00:00:00Z`).getUTCDay();
+}
+
+test('日曆日期：第一個即時交易日等於起始日期，預產歷史的最後一天是前一個平日，連續交易日遞增且跳過週末', () => {
+  const game = createGame({ seed: 7, startDate: '2024-01-01' }); // 2024-01-01 是週一
+  assert.equal(game.startDate, '2024-01-01');
+  assert.equal(game.candles()[HISTORY_DAYS - 1].date, '2023-12-29'); // 前一個平日是週五
+  advance(game, TICKS_PER_DAY * 10);
+  const dates = game.candles().map((c) => c.date);
+  assert.equal(dates[HISTORY_DAYS], '2024-01-01');
+  assert.deepEqual(dates.slice(HISTORY_DAYS, HISTORY_DAYS + 10), [
+    '2024-01-01', '2024-01-02', '2024-01-03', '2024-01-04', '2024-01-05',
+    '2024-01-08', '2024-01-09', '2024-01-10', '2024-01-11', '2024-01-12',
+  ]);
+  for (let i = 1; i < dates.length; i++) assert.ok(dates[i] > dates[i - 1]);
+  for (const d of dates) assert.ok(weekday(d) !== 0 && weekday(d) !== 6, d);
+  assert.ok(dates.includes('2023-12-25')); // 國定假日照常是交易日
+});
+
+test('日曆日期：起始日期落在週六、週日時順延到下週一', () => {
+  for (const weekend of ['2024-01-06', '2024-01-07']) {
+    const game = createGame({ seed: 7, startDate: weekend });
+    assert.equal(game.startDate, '2024-01-08');
+    assert.equal(game.candles()[HISTORY_DAYS - 1].date, '2024-01-05');
+    advance(game, 1);
+    assert.equal(game.candles()[HISTORY_DAYS].date, '2024-01-08');
+  }
+});
+
+test('日曆日期：起始日期寫進存檔，讀回後日期序列相同', () => {
+  const game = createGame({ seed: 7, startDate: '2031-03-14' });
+  advance(game, TICKS_PER_DAY * 7 + 30);
+  const save = JSON.parse(JSON.stringify(game.save()));
+  assert.equal(save.settings.startDate, '2031-03-14');
+  const restored = restoreGame(save).game;
+  assert.equal(restored.startDate, '2031-03-14');
+  assert.deepEqual(restored.candles().map((c) => c.date), game.candles().map((c) => c.date));
+});
+
+test('加入日曆日期之前的舊存檔（引擎版本 2、沒有起始日期）被拒絕讀檔', () => {
+  const old = { version: 2, seed: 7, settings: { startPrice: 100, initialCash: 1000000 }, progress: { day: HISTORY_DAYS - 1, tick: TICKS_PER_DAY }, trades: [] };
+  assert.deepEqual(restoreGame(old), { ok: false, reason: 'engine-version' });
+});

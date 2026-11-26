@@ -6,7 +6,7 @@
   'use strict';
 
   // 行情引擎版本號：修改亂數使用方式或模型參數時必須遞增，舊存檔會被拒絕（ADR-0001）
-  const ENGINE_VERSION = 2;
+  const ENGINE_VERSION = 3;
   const TICKS_PER_DAY = 270;
   const HISTORY_DAYS = 250;
   // GARCH 的長期日波動；加上空頭 σ×1.3 與跳躍後，整體日波動約 2%
@@ -98,6 +98,21 @@
     };
   }
 
+  // 日曆日期一律用 'YYYY-MM-DD' 字串，以 UTC 計算避免時區與日光節約時間的影響
+  const MS_PER_DAY = 86400000;
+  function parseDate(s) { return Date.parse(s + 'T00:00:00Z'); }
+  function formatDate(ms) { return new Date(ms).toISOString().slice(0, 10); }
+  function isWeekend(ms) { const d = new Date(ms).getUTCDay(); return d === 0 || d === 6; }
+  // 往後（step = 1）或往前（step = -1）找下一個平日；國定假日照常是交易日
+  function nextWeekday(ms, step) {
+    do ms += step * MS_PER_DAY; while (isWeekend(ms));
+    return ms;
+  }
+  function today() {
+    const d = new Date();
+    return formatDate(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  }
+
   function copyAccount(a) {
     return { cash: a.cash, shares: a.shares, trades: a.trades.map(function (t) { return Object.assign({}, t); }) };
   }
@@ -106,6 +121,11 @@
     const opts = options || {};
     const seed = opts.seed === undefined ? Math.floor(Math.random() * 4294967296) : opts.seed >>> 0;
     const startPrice = opts.startPrice === undefined ? 100 : opts.startPrice;
+    // 起始日期是第一個即時交易日（索引 HISTORY_DAYS），落在週末時順延到下週一；預產歷史從它往前倒推
+    let dateMs = parseDate(opts.startDate === undefined ? today() : opts.startDate);
+    if (isWeekend(dateMs)) dateMs = nextWeekday(dateMs, 1);
+    const startDate = formatDate(dateMs);
+    for (let i = 0; i <= HISTORY_DAYS; i++) dateMs = nextWeekday(dateMs, -1); // 第一根 K 棒的前一個平日
     const rng = makeRng(seed);
     const studentT = makeStudentT(rng);
 
@@ -195,6 +215,7 @@
         jumpSize = Math.log(1 + (rng() < 0.5 ? -size : size)); // 漲跌幅換成對數增量
       }
       markers.push({ state: state, jump: jumpTick >= 0 });
+      dateMs = nextWeekday(dateMs, 1);
     }
 
     // 盤中第 i 個 tick 的對數價格增量；第 0 個 tick 是開盤跳空
@@ -224,7 +245,7 @@
       const absReturn = Math.abs(Math.log(rawPrice / before)) / TICK_SIGMA;
       const volume = Math.round(VOLUME_PER_TICK * (0.2 + absReturn) * (sigma / DAILY_SIGMA) * (0.5 + rng()));
       if (newDay) {
-        candles.push({ open: price, high: price, low: price, close: price, volume: volume });
+        candles.push({ date: formatDate(dateMs), open: price, high: price, low: price, close: price, volume: volume });
         tickInDay = 1;
         if (candles.length > HISTORY_DAYS) openBenchmarks(candles.length - 1);
         return;
@@ -284,7 +305,7 @@
       return {
         version: ENGINE_VERSION,
         seed: seed,
-        settings: { startPrice: startPrice, initialCash: initialCash },
+        settings: { startPrice: startPrice, initialCash: initialCash, startDate: startDate },
         progress: progress(),
         trades: trades.map(function (t, i) { return { day: t.day, tick: tradeTicks[i], side: t.side, shares: t.shares }; }),
       };
@@ -304,6 +325,7 @@
 
     return {
       seed: seed,
+      startDate: startDate,
       tick: tick,
       progress: progress,
       save: save,
@@ -326,7 +348,7 @@
       benchmarks: function () {
         return { buyHold: copyAccount(buyHold), dca: copyAccount(dca) };
       },
-      // 回傳 K 棒序列；最後一根在盤中時是正在形成的當日 K 棒
+      // 回傳 K 棒序列，每根帶交易日的日曆日期（date）；最後一根在盤中時是正在形成的當日 K 棒
       candles: function () { return candles.map(function (c) { return Object.assign({}, c); }); },
       // 回傳每個交易日的市場狀態（bull／bear／sideways）與跳躍標記，和 candles() 對齊
       dayMarkers: function () { return markers.map(function (m) { return Object.assign({}, m); }); },
@@ -336,7 +358,7 @@
   // 由存檔還原：用種子重算行情到同一個 tick，途中在原本的 tick 重放交易紀錄
   function restoreGame(data) {
     if (data.version !== ENGINE_VERSION) return { ok: false, reason: 'engine-version' };
-    const game = createGame({ seed: data.seed, startPrice: data.settings.startPrice, initialCash: data.settings.initialCash });
+    const game = createGame({ seed: data.seed, startPrice: data.settings.startPrice, initialCash: data.settings.initialCash, startDate: data.settings.startDate });
     // 開局後的進度是 (HISTORY_DAYS - 1, TICKS_PER_DAY)；換算成從開局起推進的 tick 數
     function ticksTo(p) { return (p.day + 1 - HISTORY_DAYS) * TICKS_PER_DAY + p.tick - TICKS_PER_DAY; }
     let ticksDone = 0;

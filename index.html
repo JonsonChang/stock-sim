@@ -73,6 +73,7 @@
   </span>
   <button id="reveal">揭曉：關</button>
   <span>現價 <b id="price"></b></span>
+  <span><b id="date"></b>　第 <b id="year"></b> 年</span>
   <span class="m-only">漲跌 <b id="change"></b></span>
   <span class="m-only">總資產報酬 <b id="ret-bar"></b></span>
   <span>種子 <b id="seed"></b></span>
@@ -83,6 +84,7 @@
   <label>種子 <input id="new-seed" type="number" min="0" step="1" placeholder="隨機"></label>
   <label>起始價 <input id="new-price" type="number" min="0.01" step="any" value="100"></label>
   <label>初始資金 <input id="new-cash" type="number" min="1" step="1" value="1000000"></label>
+  <label>起始日期 <input id="new-date" type="date" min="1900-01-01" max="2999-12-31"></label>
   <button id="restart-confirm">確認開局（覆蓋目前存檔）</button>
   <button id="restart-cancel">取消</button>
   <span id="restart-msg"></span>
@@ -156,6 +158,7 @@
   const MS_PER_DAY_1X = 10000;
   const MIN_VISIBLE = 20;
   const AXIS_W = 60;
+  const DATE_AXIS_H = 18;
   const UP = '#e03131', DOWN = '#2f9e44';
   // 揭曉用的中性淡色，不使用紅綠，避免和 K 棒混淆
   const STATE_BANDS = {
@@ -210,6 +213,14 @@
   document.querySelectorAll('[data-speed]').forEach((btn) => {
     btn.onclick = () => setSpeed(Number(btn.dataset.speed));
   });
+  // 日曆日期：核心給 'YYYY-MM-DD'，畫面顯示 'YYYY/MM/DD'
+  const fmtDate = (d) => d.replaceAll('-', '/');
+  const fmtDateWeek = (d) => `${fmtDate(d)}（${'日一二三四五六'[new Date(`${d}T00:00:00Z`).getUTCDay()]}）`;
+  // 第 N 年：從起始日期起算，每滿一年加一；預產歷史期間算第 1 年
+  function yearNo(start, d) {
+    const n = Number(d.slice(0, 4)) - Number(start.slice(0, 4)) - (d.slice(5) < start.slice(5) ? 1 : 0) + 1;
+    return Math.max(1, n);
+  }
   const money = (n) => Math.round(n).toLocaleString('zh-TW');
   const REJECT = {
     'insufficient-cash': '現金不足',
@@ -268,20 +279,31 @@
 
   // 重新開局：頁面內的設定區與確認按鈕，不使用 alert／confirm
   const restartPanel = $('restart-panel');
-  $('restart').onclick = () => { restartPanel.hidden = !restartPanel.hidden; };
+  // 起始日期預設為開局當天的真實日期
+  function todayInput() {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+  $('new-date').value = todayInput();
+  $('restart').onclick = () => {
+    if (restartPanel.hidden) $('new-date').value = todayInput();
+    restartPanel.hidden = !restartPanel.hidden;
+  };
   $('restart-cancel').onclick = () => { restartPanel.hidden = true; };
   $('restart-confirm').onclick = () => {
     const seedText = $('new-seed').value.trim();
     const seed = seedText === '' ? undefined : Number(seedText);
     const startPrice = Number($('new-price').value);
     const initialCash = Number($('new-cash').value);
+    const startDate = $('new-date').value;
     let error = '';
     if (seed !== undefined && !(Number.isInteger(seed) && seed >= 0 && seed < 4294967296)) error = '種子須為 0～4294967295 的整數';
     else if (!(startPrice > 0)) error = '起始價須大於 0';
     else if (!(initialCash > 0)) error = '初始資金須大於 0';
+    else if (!startDate || !$('new-date').checkValidity()) error = '起始日期須為 1900/01/01～2999/12/31';
     $('restart-msg').textContent = error;
     if (error) return;
-    startGame(createGame({ seed, startPrice, initialCash }));
+    startGame(createGame({ seed, startPrice, initialCash, startDate }));
     saveBlocked = false;
     saveGame();
     restartPanel.hidden = true;
@@ -290,7 +312,7 @@
   const pct = (r) => `${r > 0 ? '+' : ''}${(r * 100).toFixed(2)}%`;
 
   let shownTrades = -1;
-  function updatePanel() {
+  function updatePanel(all) {
     if (validQty()) {
       const b = game.quote('buy', qty()), s = game.quote('sell', qty());
       $('estimate').textContent =
@@ -316,7 +338,7 @@
     if (trades.length !== shownTrades) {
       shownTrades = trades.length;
       $('trades').innerHTML = trades.reverse().map((t) =>
-        `<tr><td>${t.day + 1}</td><td>${t.side === 'buy' ? '買' : '賣'}</td><td>${t.shares}</td>` +
+        `<tr><td>${fmtDate(all[t.day].date)}</td><td>${t.side === 'buy' ? '買' : '賣'}</td><td>${t.shares}</td>` +
         `<td>${t.price.toFixed(2)}</td><td>${t.fee}</td><td>${t.tax}</td></tr>`).join('');
     }
   }
@@ -449,7 +471,7 @@
     const visible = all.slice(first, Math.min(n, Math.ceil(start + count)));
     const plotW = plotWidth();
     const priceH = h * 0.6, volTop = priceH + 8, volBottom = h * 0.75, volH = volBottom - volTop;
-    const eqTop = volBottom + 8, eqH = h - eqTop;
+    const eqTop = volBottom + 8, eqBottom = h - DATE_AXIS_H, eqH = eqBottom - eqTop;
     let hi = -Infinity, lo = Infinity, maxVol = 0;
     for (const c of visible) {
       hi = Math.max(hi, c.high);
@@ -500,7 +522,7 @@
     ctx.beginPath(); ctx.moveTo(0, eqY(0)); ctx.lineTo(plotW, eqY(0)); ctx.stroke();
     ctx.fillText('0%', plotW + 6, eqY(0) + 4);
     // 窗格上下緣各標一個刻度，太靠近 0% 的不標，避免文字重疊
-    for (const yy of [eqTop + 6, h - 6]) {
+    for (const yy of [eqTop + 6, eqBottom - 6]) {
       if (Math.abs(yy - eqY(0)) > 14) ctx.fillText(pct(eqR(yy)), plotW + 6, yy + 4);
     }
     ctx.save();
@@ -562,6 +584,18 @@
     ctx.lineWidth = 1;
     ctx.restore();
 
+    // 日期刻度：每隔固定根數標一個日期，刻度對齊固定的 K 棒索引，平移時不會跳動
+    // 一個日期標籤約 70px 寬，間距至少 84px；離左右邊緣不到半個標籤寬（36px）的不標，避免被裁切
+    const step = Math.max(1, Math.ceil(84 / slot));
+    ctx.fillStyle = '#888';
+    ctx.font = '11px system-ui';
+    ctx.textAlign = 'center';
+    for (let i = Math.ceil(first / step) * step; i < first + visible.length; i += step) {
+      const x = xOf(i);
+      if (x >= 36 && x <= plotW - 36) ctx.fillText(fmtDate(all[i].date), x, h - 5);
+    }
+    ctx.textAlign = 'start';
+
     // 滑鼠所在 K 棒的詳細數字
     const hovered = hoverX !== null && hoverX < plotW && !drag ? Math.floor(start + hoverX / slot) : -1;
     if (hovered >= 0 && hovered < n) {
@@ -569,11 +603,11 @@
       const x = xOf(hovered);
       ctx.strokeStyle = '#666';
       ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
-      const text = `交易日 ${hovered + 1}　開 ${c.open.toFixed(2)}　高 ${c.high.toFixed(2)}　低 ${c.low.toFixed(2)}　收 ${c.close.toFixed(2)}　量 ${c.volume}`;
+      const text = `${fmtDateWeek(c.date)}　開 ${c.open.toFixed(2)}　高 ${c.high.toFixed(2)}　低 ${c.low.toFixed(2)}　收 ${c.close.toFixed(2)}　量 ${c.volume}`;
       ctx.font = '12px system-ui';
       // 窄螢幕放不下一行時拆成兩行
       const lines = ctx.measureText(text).width + 20 > w
-        ? [`交易日 ${hovered + 1}　量 ${c.volume}`, `開 ${c.open.toFixed(2)}　高 ${c.high.toFixed(2)}　低 ${c.low.toFixed(2)}　收 ${c.close.toFixed(2)}`]
+        ? [`${fmtDateWeek(c.date)}　量 ${c.volume}`, `開 ${c.open.toFixed(2)}　高 ${c.high.toFixed(2)}　低 ${c.low.toFixed(2)}　收 ${c.close.toFixed(2)}`]
         : [text];
       ctx.fillStyle = 'rgba(17, 17, 17, 0.85)';
       ctx.fillRect(4, 4, Math.max(...lines.map((l) => ctx.measureText(l).width)) + 12, 6 + lines.length * 16);
@@ -587,7 +621,10 @@
     const change = n > 1 ? game.price() / all[n - 2].close - 1 : 0; // 相對前一交易日收盤
     $('change').textContent = pct(change);
     $('change').style.color = change > 0 ? UP : change < 0 ? DOWN : '';
-    updatePanel();
+    const today = all[n - 1].date;
+    $('date').textContent = fmtDateWeek(today);
+    $('year').textContent = yearNo(game.startDate, today);
+    updatePanel(all);
   }
 
   function frame(now) {
