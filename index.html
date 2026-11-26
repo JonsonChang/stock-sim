@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>股票投資模擬器</title>
 <style>
+  :root { --user: #4dabf7; --buyHold: #da77f2; --dca: #ffa94d; }
   body { margin: 0; font-family: system-ui, sans-serif; background: #111; color: #ddd; }
   header { display: flex; gap: 16px; align-items: center; padding: 8px 12px; flex-wrap: wrap; }
   button { background: #333; color: #ddd; border: 1px solid #555; padding: 4px 10px; cursor: pointer; }
@@ -22,6 +23,8 @@
   aside dd { margin: 0; text-align: right; }
   #buy { background: #6b1d1d; } #sell { background: #1d4d2a; }
   #order-msg { color: #ffa94d; min-height: 1.2em; }
+  .swatch { display: inline-block; width: 10px; height: 3px; vertical-align: middle; margin-right: 4px; }
+  aside label { cursor: pointer; }
   table { width: 100%; border-collapse: collapse; }
   th, td { padding: 2px 4px; text-align: right; border-bottom: 1px solid #222; }
 </style>
@@ -67,6 +70,13 @@
     <dt>已實現損益</dt><dd id="pos-realized"></dd>
   </dl>
 
+  <h3>績效</h3>
+  <dl>
+    <dt><span class="swatch" style="background: var(--user)"></span>我的報酬率</dt><dd id="ret-user"></dd>
+    <dt><label><input type="checkbox" id="show-buyHold" checked style="width: auto"><span class="swatch" style="background: var(--buyHold)"></span>買進持有</label></dt><dd id="ret-buyHold"></dd>
+    <dt><label><input type="checkbox" id="show-dca" checked style="width: auto"><span class="swatch" style="background: var(--dca)"></span>定期定額</label></dt><dd id="ret-dca"></dd>
+  </dl>
+
   <h3>交易紀錄</h3>
   <table>
     <thead><tr><th>交易日</th><th>買/賣</th><th>股數</th><th>成交價</th><th>手續費</th><th>證交稅</th></tr></thead>
@@ -88,7 +98,11 @@
     sideways: { fill: 'rgba(200, 200, 200, 0.05)', label: '盤整' },
   };
 
+  // 資產曲線的線色，和績效區的色塊一致
+  const SERIES_COLORS = { user: '#4dabf7', buyHold: '#da77f2', dca: '#ffa94d' };
+
   const game = createGame();
+  const showBenchmark = { buyHold: true, dca: true };
   let playing = true;
   let reveal = false;
   let speed = 1;
@@ -133,6 +147,10 @@
   }
   $('buy').onclick = () => placeOrder('buy');
   $('sell').onclick = () => placeOrder('sell');
+  for (const key of ['buyHold', 'dca']) {
+    $(`show-${key}`).onchange = (e) => { showBenchmark[key] = e.target.checked; };
+  }
+  const pct = (r) => `${r > 0 ? '+' : ''}${(r * 100).toFixed(2)}%`;
 
   let shownTrades = -1;
   function updatePanel() {
@@ -151,6 +169,10 @@
     $('pos-total').textContent = money(a.totalAssets);
     $('pos-unrealized').textContent = money(a.unrealizedPnl);
     $('pos-realized').textContent = money(a.realizedPnl);
+
+    const r = game.returns();
+    $('ret-user').textContent = pct(r.user);
+    for (const key of ['buyHold', 'dca']) $(`ret-${key}`).textContent = showBenchmark[key] ? pct(r[key]) : '-';
 
     const trades = game.trades();
     if (trades.length !== shownTrades) {
@@ -227,7 +249,8 @@
     const first = Math.max(0, Math.floor(start));
     const visible = all.slice(first, Math.min(n, Math.ceil(start + count)));
     const plotW = plotWidth();
-    const priceH = h * 0.75, volTop = priceH + 8, volH = h - volTop;
+    const priceH = h * 0.6, volTop = priceH + 8, volBottom = h * 0.75, volH = volBottom - volTop;
+    const eqTop = volBottom + 8, eqH = h - eqTop;
     let hi = -Infinity, lo = Infinity, maxVol = 0;
     for (const c of visible) {
       hi = Math.max(hi, c.high);
@@ -252,6 +275,35 @@
     }
 
     const xOf = (index) => (index - start) * slot + slot / 2;
+
+    // 資產曲線：Y 軸是報酬率 %，從 0% 起算；預產的歷史區段沒有資料，自然留白
+    const series = ['user', 'buyHold', 'dca'].filter((k) => k === 'user' || showBenchmark[k]);
+    const curve = game.equityCurve();
+    const curveFrom = curve.length ? curve[0].day : n;
+    // 多取左右各一點，讓線延伸到窗格邊緣
+    const curveVisible = curve.slice(Math.max(0, first - 1 - curveFrom), Math.max(0, first + visible.length + 1 - curveFrom));
+    let eqHi = 0, eqLo = 0;
+    for (const p of curveVisible) {
+      if (p.day < first || p.day >= first + visible.length) continue;
+      for (const k of series) { eqHi = Math.max(eqHi, p[k]); eqLo = Math.min(eqLo, p[k]); }
+    }
+    const eqPad = (eqHi - eqLo) * 0.1 || 0.01;
+    eqHi += eqPad; eqLo -= eqPad;
+    const eqY = (r) => eqTop + ((eqHi - r) / (eqHi - eqLo)) * eqH;
+    const eqR = (yy) => eqHi - ((yy - eqTop) / eqH) * (eqHi - eqLo);
+    // 第一個即時交易日的左緣補一個 0% 起點，曲線從 0% 起算
+    const eqPoints = curveVisible.map((p) => Object.assign({ x: xOf(p.day) }, p));
+    if (curveVisible.length && curveVisible[0].day === curveFrom) {
+      eqPoints.unshift({ x: xOf(curveFrom) - slot / 2, user: 0, buyHold: 0, dca: 0 });
+    }
+    ctx.fillStyle = '#888';
+    ctx.strokeStyle = '#444';
+    ctx.beginPath(); ctx.moveTo(0, eqY(0)); ctx.lineTo(plotW, eqY(0)); ctx.stroke();
+    ctx.fillText('0%', plotW + 6, eqY(0) + 4);
+    // 窗格上下緣各標一個刻度，太靠近 0% 的不標，避免文字重疊
+    for (const yy of [eqTop + 6, h - 6]) {
+      if (Math.abs(yy - eqY(0)) > 14) ctx.fillText(pct(eqR(yy)), plotW + 6, yy + 4);
+    }
     ctx.save();
     ctx.beginPath(); ctx.rect(0, 0, plotW, h); ctx.clip(); // 平移到一半的 K 棒不要畫進價格軸
 
@@ -285,7 +337,7 @@
       const top = y(Math.max(c.open, c.close));
       ctx.fillRect(x - bodyW / 2, top, bodyW, Math.max(1, y(Math.min(c.open, c.close)) - top));
       const vh = (c.volume / maxVol) * volH;
-      ctx.fillRect(x - bodyW / 2, h - vh, bodyW, vh);
+      ctx.fillRect(x - bodyW / 2, volBottom - vh, bodyW, vh);
     });
 
     // 買賣點：▲ 買標在 K 棒下方，▼ 賣標在 K 棒上方
@@ -300,6 +352,15 @@
       else ctx.fillText('▼', x, y(c.high) - 4);
     }
     ctx.textAlign = 'start';
+
+    ctx.lineWidth = 1.5;
+    for (const k of series) {
+      ctx.strokeStyle = SERIES_COLORS[k];
+      ctx.beginPath();
+      eqPoints.forEach((p, i) => (i ? ctx.lineTo : ctx.moveTo).call(ctx, p.x, eqY(p[k])));
+      ctx.stroke();
+    }
+    ctx.lineWidth = 1;
     ctx.restore();
 
     // 滑鼠所在 K 棒的詳細數字

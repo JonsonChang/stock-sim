@@ -18,6 +18,9 @@
   const TAX_RATE = 0.003;
 
   const PRICE_LIMIT = 0.1;
+  // 定期定額：每 20 個交易日投入初始資金的 1/12
+  const DCA_INTERVAL = 20;
+  const DCA_PERIODS = 12;
 
   // 市場狀態：μ 是每個交易日的對數漂移
   const STATE_PARAMS = {
@@ -70,6 +73,8 @@
   function floorToTick(p) { const s = tickSize(p); return snap(Math.floor(p / s + 1e-9), s); }
   function ceilToTick(p) { const s = tickSize(p); return snap(Math.ceil(p / s - 1e-9), s); }
 
+  function feeFor(amount) { return Math.max(MIN_FEE, Math.floor(amount * FEE_RATE)); }
+
   // mulberry32：32 位元種子的決定性亂數產生器，輸出 (0, 1)
   function makeRng(seed) {
     let s = seed >>> 0;
@@ -91,6 +96,10 @@
     };
   }
 
+  function copyAccount(a) {
+    return { cash: a.cash, shares: a.shares, trades: a.trades.map(function (t) { return Object.assign({}, t); }) };
+  }
+
   function createGame(options) {
     const opts = options || {};
     const seed = opts.seed === undefined ? Math.floor(Math.random() * 4294967296) : opts.seed >>> 0;
@@ -109,6 +118,50 @@
     let jumpTick = -1; // 當日跳躍發生在第幾個 tick，-1 表示沒有跳躍
     let jumpSize = 0;
     let tickInDay = TICKS_PER_DAY; // 尚未開始新的交易日
+    const initialCash = opts.initialCash === undefined ? 1000000 : opts.initialCash;
+
+    // 帳務：只讀行情、不碰亂數，所以市價單不會影響行情（ADR-0001）
+    let cash = initialCash;
+    let shares = 0;
+    let costBasis = 0; // 部位成本，含買進手續費
+    let realizedPnl = 0;
+    const trades = [];
+
+    // 比較基準：只讀行情、不碰亂數，所以不影響行情（ADR-0001）
+    const buyHold = { cash: initialCash, shares: 0, trades: [] };
+    const dca = { cash: initialCash, shares: 0, trades: [] };
+    const closedCurve = []; // 已收盤的即時交易日的報酬率，在下一個交易日開盤前記下
+
+    // 以當下 tick 價計算使用者與比較基準的報酬率
+    function returns() {
+      function r(c, n) { return (c + n * price - initialCash) / initialCash; }
+      return { user: r(cash, shares), buyHold: r(buyHold.cash, buyHold.shares), dca: r(dca.cash, dca.shares) };
+    }
+
+    // 最後一根 K 棒在當下 tick 價的資產曲線點；還在預產的歷史區段時回傳 null
+    function latestCurvePoint() {
+      return candles.length > HISTORY_DAYS ? Object.assign({ day: candles.length - 1 }, returns()) : null;
+    }
+
+    // 以開盤價用預算買進，股數無條件捨去，扣手續費
+    function benchmarkBuy(account, budget, day) {
+      let n = Math.floor(budget / price);
+      while (n > 0 && price * n + feeFor(price * n) > budget) n--;
+      if (n === 0) return;
+      const fee = feeFor(price * n);
+      account.cash -= price * n + fee;
+      account.shares += n;
+      account.trades.push({ day: day, shares: n, price: price, fee: fee });
+    }
+
+    // 每個即時交易日開盤時執行比較基準的買進
+    function openBenchmarks(day) {
+      const liveDay = day - HISTORY_DAYS;
+      if (liveDay === 0) benchmarkBuy(buyHold, buyHold.cash, day);
+      if (liveDay % DCA_INTERVAL === 0 && liveDay / DCA_INTERVAL < DCA_PERIODS) {
+        benchmarkBuy(dca, initialCash / DCA_PERIODS, day);
+      }
+    }
 
     function startDay() {
       const n = candles.length;
@@ -155,6 +208,8 @@
     function tick() {
       const newDay = tickInDay === TICKS_PER_DAY;
       if (newDay) {
+        const closed = latestCurvePoint();
+        if (closed) closedCurve.push(closed);
         startDay();
         tickInDay = 0;
       }
@@ -168,6 +223,7 @@
       if (newDay) {
         candles.push({ open: price, high: price, low: price, close: price, volume: volume });
         tickInDay = 1;
+        if (candles.length > HISTORY_DAYS) openBenchmarks(candles.length - 1);
         return;
       }
       const c = candles[candles.length - 1];
@@ -180,17 +236,10 @@
 
     for (let i = 0; i < HISTORY_DAYS * TICKS_PER_DAY; i++) tick();
 
-    // 帳務：只讀行情、不碰亂數，所以市價單不會影響行情（ADR-0001）
-    let cash = opts.initialCash === undefined ? 1000000 : opts.initialCash;
-    let shares = 0;
-    let costBasis = 0; // 部位成本，含買進手續費
-    let realizedPnl = 0;
-    const trades = [];
-
     // 以當下 tick 價預估一筆市價單；total 是買進要付出、賣出會收到的現金
     function quote(side, n) {
       const amount = price * n;
-      const fee = Math.max(MIN_FEE, Math.floor(amount * FEE_RATE));
+      const fee = feeFor(amount);
       const tax = side === 'sell' ? Math.floor(amount * TAX_RATE) : 0;
       const total = side === 'buy' ? amount + fee : amount - fee - tax;
       return { amount: amount, fee: fee, tax: tax, total: total };
@@ -245,6 +294,18 @@
       // 交易紀錄，依成交先後排列；day 是成交當下 K 棒的索引
       trades: function () { return trades.map(function (t) { return Object.assign({}, t); }); },
       price: function () { return price; },
+      returns: returns,
+      // 資產曲線：從第一個即時交易日起每個交易日一筆報酬率，已收盤的用收盤值，最後一筆是當下即時值
+      equityCurve: function () {
+        const curve = closedCurve.map(function (p) { return Object.assign({}, p); });
+        const latest = latestCurvePoint();
+        if (latest) curve.push(latest);
+        return curve;
+      },
+      // 兩個比較基準的帳戶；trades 的 day 是買進當下 K 棒的索引
+      benchmarks: function () {
+        return { buyHold: copyAccount(buyHold), dca: copyAccount(dca) };
+      },
       // 回傳 K 棒序列；最後一根在盤中時是正在形成的當日 K 棒
       candles: function () { return candles.map(function (c) { return Object.assign({}, c); }); },
       // 回傳每個交易日的市場狀態（bull／bear／sideways）與跳躍標記，和 candles() 對齊

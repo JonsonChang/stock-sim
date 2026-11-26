@@ -340,3 +340,94 @@ test('盤中的當日 K 棒也有市場狀態與跳躍標記', () => {
   assert.ok(['bull', 'bear', 'sideways'].includes(markers.at(-1).state));
   assert.equal(typeof markers.at(-1).jump, 'boolean');
 });
+
+// 依規格獨立計算：股數無條件捨去，成交金額加手續費（0.1425%，最低 20 元）不超過預算
+function affordable(budget, price) {
+  let n = Math.floor(budget / price);
+  while (n > 0 && price * n + Math.max(20, Math.floor(price * n * 0.001425)) > budget) n--;
+  return n;
+}
+
+test('買進持有：在第一個即時交易日開盤，用全部初始資金買進，股數與手續費正確，之後永不賣出', () => {
+  const game = createGame({ seed: 7, initialCash: 1000000 });
+  assert.deepEqual(game.benchmarks().buyHold.trades, []);
+
+  advance(game, 1);
+  const open = game.candles()[HISTORY_DAYS].open;
+  const shares = affordable(1000000, open);
+  const fee = Math.floor(open * shares * 0.001425);
+  const buyHold = game.benchmarks().buyHold;
+  assert.deepEqual(buyHold.trades, [{ day: HISTORY_DAYS, shares, price: open, fee }]);
+  assert.equal(buyHold.shares, shares);
+  assert.ok(Math.abs(buyHold.cash - (1000000 - open * shares - fee)) < 1e-6);
+  assert.ok(buyHold.cash < open * 1.002); // 再多買 1 股就不夠
+
+  advance(game, TICKS_PER_DAY * 30);
+  assert.equal(game.benchmarks().buyHold.trades.length, 1);
+  assert.equal(game.benchmarks().buyHold.shares, shares);
+});
+
+test('定期定額：在第 1、21、41… 個即時交易日開盤各投入初始資金的 1/12，投完 12 期就停止', () => {
+  const game = createGame({ seed: 7, initialCash: 1200000 });
+  advance(game, TICKS_PER_DAY * 300);
+  const candles = game.candles();
+  const dca = game.benchmarks().dca;
+
+  const expectedDays = Array.from({ length: 12 }, (_, k) => HISTORY_DAYS + 20 * k);
+  assert.deepEqual(dca.trades.map((t) => t.day), expectedDays);
+  let spent = 0, shares = 0;
+  for (const t of dca.trades) {
+    const open = candles[t.day].open;
+    assert.equal(t.price, open);
+    assert.equal(t.shares, affordable(100000, open));
+    assert.equal(t.fee, Math.max(20, Math.floor(open * t.shares * 0.001425)));
+    spent += open * t.shares + t.fee;
+    shares += t.shares;
+  }
+  assert.equal(dca.shares, shares);
+  assert.ok(Math.abs(dca.cash - (1200000 - spent)) < 1e-6);
+});
+
+test('報酬率：使用者與兩個比較基準都以初始資金為分母，即時交易日開始前都是 0', () => {
+  const game = createGame({ seed: 7, initialCash: 1200000 });
+  assert.deepEqual(game.returns(), { user: 0, buyHold: 0, dca: 0 });
+
+  advance(game, TICKS_PER_DAY * 25 + 40);
+  game.order({ side: 'buy', shares: 3000 });
+  advance(game, 30);
+  const price = game.price();
+  const { buyHold, dca } = game.benchmarks();
+  const a = game.account();
+  const r = game.returns();
+  assert.ok(Math.abs(r.user - (a.cash + a.shares * price - 1200000) / 1200000) < 1e-12);
+  assert.ok(Math.abs(r.buyHold - (buyHold.cash + buyHold.shares * price - 1200000) / 1200000) < 1e-12);
+  assert.ok(Math.abs(r.dca - (dca.cash + dca.shares * price - 1200000) / 1200000) < 1e-12);
+  assert.notEqual(r.user, 0);
+});
+
+test('資產曲線：從第一個即時交易日起每個交易日一筆，已收盤的用收盤值，最後一筆是當下即時值', () => {
+  const game = createGame({ seed: 7, initialCash: 1000000 });
+  assert.deepEqual(game.equityCurve(), []);
+
+  advance(game, TICKS_PER_DAY + 50);
+  const buy = game.order({ side: 'buy', shares: 2000 }).trade; // 第 2 個即時交易日盤中買進
+  advance(game, TICKS_PER_DAY * 2 + 10);
+
+  const candles = game.candles();
+  const curve = game.equityCurve();
+  assert.deepEqual(curve.map((p) => p.day), [HISTORY_DAYS, HISTORY_DAYS + 1, HISTORY_DAYS + 2, HISTORY_DAYS + 3]);
+
+  const bh = game.benchmarks().buyHold;
+  const cashAfterBuy = 1000000 - buy.price * 2000 - buy.fee;
+  curve.slice(0, 3).forEach((p, i) => {
+    const close = candles[p.day].close;
+    const user = i === 0 ? 0 : (cashAfterBuy + 2000 * close - 1000000) / 1000000;
+    assert.ok(Math.abs(p.user - user) < 1e-12);
+    assert.ok(Math.abs(p.buyHold - (bh.cash + bh.shares * close - 1000000) / 1000000) < 1e-12);
+  });
+  assert.deepEqual(curve.at(-1), Object.assign({ day: HISTORY_DAYS + 3 }, game.returns()));
+
+  // 暫停時下單，最右端立即反映
+  game.order({ side: 'sell', shares: 2000 });
+  assert.deepEqual(game.equityCurve().at(-1), Object.assign({ day: HISTORY_DAYS + 3 }, game.returns()));
+});
