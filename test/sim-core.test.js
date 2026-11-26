@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createGame, TICKS_PER_DAY, HISTORY_DAYS } = require('../sim-core.js');
+const { createGame, restoreGame, ENGINE_VERSION, TICKS_PER_DAY, HISTORY_DAYS } = require('../sim-core.js');
 
 function advance(game, ticks) {
   for (let i = 0; i < ticks; i++) game.tick();
@@ -430,4 +430,73 @@ test('資產曲線：從第一個即時交易日起每個交易日一筆，已�
   // 暫停時下單，最右端立即反映
   game.order({ side: 'sell', shares: 2000 });
   assert.deepEqual(game.equityCurve().at(-1), Object.assign({ day: HISTORY_DAYS + 3 }, game.returns()));
+});
+
+// 讀回的局所有可觀察狀態都要和原本的局相同
+function observableState(game) {
+  return {
+    seed: game.seed,
+    candles: game.candles(),
+    progress: game.progress(),
+    price: game.price(),
+    account: game.account(),
+    trades: game.trades(),
+    benchmarks: game.benchmarks(),
+    returns: game.returns(),
+    equityCurve: game.equityCurve(),
+    dayMarkers: game.dayMarkers(),
+  };
+}
+
+test('存檔後讀回：K 棒、進度、部位、現金、交易紀錄和比較基準數值都完全相同', () => {
+  const game = createGame({ seed: 99, startPrice: 80, initialCash: 1200000 });
+  advance(game, 37);
+  game.order({ side: 'buy', shares: 3000 });
+  game.order({ side: 'buy', shares: 15 }); // 同一個 tick 連續下單
+  advance(game, TICKS_PER_DAY * 22 + 100);
+  game.order({ side: 'sell', shares: 1000 });
+  advance(game, TICKS_PER_DAY - 137); // 停在交易日收盤的 tick
+  assert.deepEqual(game.progress(), { day: HISTORY_DAYS + 22, tick: TICKS_PER_DAY });
+  game.order({ side: 'sell', shares: 15 });
+  advance(game, 58);
+
+  const save = JSON.parse(JSON.stringify(game.save())); // 存進 localStorage 會經過 JSON
+  assert.deepEqual(save.progress, { day: HISTORY_DAYS + 23, tick: 58 });
+  const restored = restoreGame(save);
+  assert.equal(restored.ok, true);
+  assert.deepEqual(observableState(restored.game), observableState(game));
+
+  // 讀回後接著玩，行情和帳務也和原本的局一致
+  advance(game, 500);
+  advance(restored.game, 500);
+  game.order({ side: 'sell', shares: 2000 });
+  restored.game.order({ side: 'sell', shares: 2000 });
+  assert.deepEqual(observableState(restored.game), observableState(game));
+});
+
+test('引擎版本號不符時拒絕讀檔', () => {
+  const game = createGame({ seed: 99 });
+  advance(game, 300);
+  const save = game.save();
+  assert.equal(save.version, ENGINE_VERSION);
+  assert.deepEqual(restoreGame(Object.assign({}, save, { version: ENGINE_VERSION - 1 })), { ok: false, reason: 'engine-version' });
+  assert.deepEqual(restoreGame(Object.assign({}, save, { version: undefined })), { ok: false, reason: 'engine-version' });
+});
+
+test('5,000 個交易日的存檔，在 Node 中重算時間小於 1 秒', () => {
+  const game = createGame({ seed: 5 });
+  for (let day = 0; day < 5000; day++) {
+    advance(game, TICKS_PER_DAY);
+    if (day % 50 === 0) game.order({ side: day % 100 === 0 ? 'buy' : 'sell', shares: 1000 });
+  }
+  const save = JSON.parse(JSON.stringify(game.save()));
+
+  const startedAt = performance.now();
+  const restored = restoreGame(save);
+  const elapsed = performance.now() - startedAt;
+
+  assert.equal(restored.ok, true);
+  assert.deepEqual(restored.game.progress(), { day: HISTORY_DAYS + 4999, tick: TICKS_PER_DAY });
+  assert.deepEqual(restored.game.account(), game.account());
+  assert.ok(elapsed < 1000, `重算花了 ${Math.round(elapsed)} ms`);
 });
