@@ -20,6 +20,7 @@
     <button data-speed="5">5x</button>
     <button data-speed="20">20x</button>
   </span>
+  <button id="reveal">揭曉：關</button>
   <span>現價 <b id="price"></b></span>
   <span>種子 <b id="seed"></b></span>
 </header>
@@ -30,9 +31,16 @@
   const MS_PER_DAY_1X = 10000;
   const VISIBLE_CANDLES = 80;
   const UP = '#e03131', DOWN = '#2f9e44';
+  // 揭曉用的中性淡色，不使用紅綠，避免和 K 棒混淆
+  const STATE_BANDS = {
+    bull: { fill: 'rgba(90, 140, 255, 0.10)', label: '多頭' },
+    bear: { fill: 'rgba(180, 110, 255, 0.10)', label: '空頭' },
+    sideways: { fill: 'rgba(200, 200, 200, 0.05)', label: '盤整' },
+  };
 
   const game = createGame();
   let playing = true;
+  let reveal = false;
   let speed = 1;
   let pendingTicks = 0;
   let lastTime = null;
@@ -42,6 +50,12 @@
   playBtn.onclick = () => {
     playing = !playing;
     playBtn.textContent = playing ? '暫停' : '播放';
+  };
+  const revealBtn = document.getElementById('reveal');
+  revealBtn.onclick = () => {
+    reveal = !reveal;
+    revealBtn.textContent = reveal ? '揭曉：開' : '揭曉：關';
+    revealBtn.classList.toggle('active', reveal);
   };
   document.querySelectorAll('[data-speed]').forEach((btn) => {
     btn.onclick = () => {
@@ -88,6 +102,28 @@
       const yy = y(p);
       ctx.beginPath(); ctx.moveTo(0, yy); ctx.lineTo(plotW, yy); ctx.stroke();
       ctx.fillText(p.toFixed(2), plotW + 6, yy + 4);
+    }
+
+    if (reveal) {
+      const markers = game.dayMarkers().slice(-visible.length);
+      // 市場狀態：連續相同狀態的區段畫一條背景帶，左上角加文字標籤
+      let start = 0;
+      for (let i = 1; i <= markers.length; i++) {
+        if (i < markers.length && markers[i].state === markers[start].state) continue;
+        const band = STATE_BANDS[markers[start].state];
+        ctx.fillStyle = band.fill;
+        ctx.fillRect(start * slot, 0, (i - start) * slot, h);
+        ctx.fillStyle = '#aaa';
+        ctx.fillText(band.label, start * slot + 4, 14);
+        start = i;
+      }
+      // 跳躍日：K 棒上方加標記
+      ctx.fillStyle = '#ffd43b';
+      ctx.textAlign = 'center';
+      markers.forEach((m, i) => {
+        if (m.jump) ctx.fillText('⚡', i * slot + slot / 2, y(visible[i].high) - 6);
+      });
+      ctx.textAlign = 'start';
     }
 
     visible.forEach((c, i) => {
