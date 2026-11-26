@@ -435,15 +435,29 @@
       `種子 ${r.seed}　${range}　第 ${r.simYear} 年　已進行 ${r.liveDays} 個交易日　${r.expired ? '已達模擬期限' : '模擬進行中'}`;
     const cols = ['user', 'buyHold', 'dca'];
     const row = (label, f) => `<tr><td>${label}</td>${cols.map((k) => `<td>${f(r[k])}</td>`).join('')}</tr>`;
-    const annual = (s) => (s.annualizedReturn === null ? '—' : pct(s.annualizedReturn));
+    const orDash = (v, f) => (v === null ? '—' : f(v));
+    const annual = (s) => orDash(s.annualizedReturn, pct);
+    // 最大回撤區間：波峰 → 波谷 → 恢復日（尚未創新高顯示「尚未恢復」）；未曾回撤時顯示 —
+    const ddRange = (s) => (s.troughDate === null ? '—'
+      : `${fmtDate(s.peakDate)} → ${fmtDate(s.troughDate)} → ${s.recoveryDate === null ? '尚未恢復' : fmtDate(s.recoveryDate)}`);
     $('report-perf').innerHTML = [
       row('累計投入本金', (s) => money(s.investedCapital)),
       row('總資產', (s) => money(s.totalAssets)),
       row('總損益', (s) => money(s.totalPnl)),
       row('總報酬率', (s) => pct(s.totalReturn)),
       row('年化報酬率', annual),
+      row('最大回撤', (s) => pct(s.maxDrawdown)),
+      row('波峰 → 波谷 → 恢復', ddRange),
+      row('當前回撤', (s) => pct(s.currentDrawdown)),
+      row('年化波動率', (s) => orDash(s.annualizedVolatility, (v) => `${(v * 100).toFixed(2)}%`)),
+      row('夏普比率', (s) => orDash(s.sharpeRatio, (v) => v.toFixed(2))),
+      row('卡瑪比率', (s) => orDash(s.calmarRatio, (v) => v.toFixed(2))),
     ].join('');
-    $('report-note').textContent = r.liveDays < 20 ? '年化報酬率：未滿 20 個交易日不年化，以免短期報酬被放大誤導。' : '';
+    $('report-note').innerHTML = [
+      r.liveDays < 20 ? '年化報酬率：未滿 20 個交易日不年化，以免短期報酬被放大誤導；夏普與卡瑪比率同樣顯示 —。' : '',
+      r.liveDays < 5 ? '年化波動率：未滿 5 個交易日不計算。' : '',
+      '風險指標以「1 + 累計投入報酬率」計算，起始日期視為報酬率 0% 的波峰起點；夏普比率的無風險利率為 0%。',
+    ].filter(Boolean).join('<br>');
     const u = r.user;
     $('report-user').innerHTML = [
       ['已實現損益', money(u.realizedPnl)],

@@ -1006,7 +1006,7 @@ test('定期定額零頭滾存：高股價單月買不完或買不起時保留�
   assert.equal(expGame.expired(), true);
 });
 
-test('投資報告：開局未推進時三方損益與報酬率為 0，年化報酬率為空值，情境資訊為起始狀態', () => {
+test('投資報告：開局未推進時三方損益與報酬率為 0，年化報酬率與風險指標為空值、最大回撤為 0，情境資訊為起始狀態', () => {
   const game = createGame({ seed: 7, startDate: '2024-01-15', initialCash: 1000000, monthlyContribution: 10000 });
   const r = game.report();
   assert.equal(r.seed, 7);
@@ -1017,10 +1017,20 @@ test('投資報告：開局未推進時三方損益與報酬率為 0，年化報
   assert.equal(r.expired, false);
   assert.deepEqual(r.user, {
     investedCapital: 1000000, totalAssets: 1000000, totalPnl: 0, totalReturn: 0, annualizedReturn: null,
+    maxDrawdown: 0, peakDate: null, troughDate: null, recoveryDate: null, currentDrawdown: 0,
+    annualizedVolatility: null, sharpeRatio: null, calmarRatio: null,
     realizedPnl: 0, unrealizedPnl: 0, totalFees: 0, totalTax: 0,
   });
-  assert.deepEqual(r.buyHold, { investedCapital: 1000000, totalAssets: 1000000, totalPnl: 0, totalReturn: 0, annualizedReturn: null });
-  assert.deepEqual(r.dca, { investedCapital: 0, totalAssets: 0, totalPnl: 0, totalReturn: 0, annualizedReturn: null });
+  assert.deepEqual(r.buyHold, {
+    investedCapital: 1000000, totalAssets: 1000000, totalPnl: 0, totalReturn: 0, annualizedReturn: null,
+    maxDrawdown: 0, peakDate: null, troughDate: null, recoveryDate: null, currentDrawdown: 0,
+    annualizedVolatility: null, sharpeRatio: null, calmarRatio: null,
+  });
+  assert.deepEqual(r.dca, {
+    investedCapital: 0, totalAssets: 0, totalPnl: 0, totalReturn: 0, annualizedReturn: null,
+    maxDrawdown: 0, peakDate: null, troughDate: null, recoveryDate: null, currentDrawdown: 0,
+    annualizedVolatility: null, sharpeRatio: null, calmarRatio: null,
+  });
 });
 
 test('投資報告：盤中持有部位時，總資產、未實現損益與總報酬率隨當下 tick 價即時更新，手續費與證交稅累計所有成交', () => {
@@ -1101,4 +1111,138 @@ test('投資報告：模擬年度與到期狀態，存檔以種子重算讀回�
   const restored = restoreGame(JSON.parse(JSON.stringify(game.save())));
   assert.equal(restored.ok, true);
   assert.deepEqual(restored.game.report(), r);
+});
+
+// 買進持有在無每月入金時，股數與現金於第一個即時交易日開盤後固定；以每日收盤價獨立算出各交易日的總資產
+function buyHoldCloses(game) {
+  const { buyHold } = game.benchmarks();
+  return game.candles().slice(HISTORY_DAYS).map((c) => ({ date: c.date, assets: buyHold.cash + buyHold.shares * c.close }));
+}
+
+test('最大回撤：自開局 0% 起算的單調下跌，波峰日為起始日期、波谷日為最後一個交易日且尚未恢復', () => {
+  const game = createGame({ seed: 28, startDate: '2024-01-15', initialCash: 1000000, monthlyContribution: 0 });
+  advance(game, TICKS_PER_DAY * 6);
+  const days = buyHoldCloses(game);
+  // 前提：六個收盤總資產皆低於初始資金且逐日下降
+  days.forEach((d, i) => assert.ok(d.assets < (i ? days[i - 1].assets : 1000000)));
+  const r = game.report().buyHold;
+  const expected = days[5].assets / 1000000 - 1;
+  assert.ok(Math.abs(r.maxDrawdown - expected) < 1e-12);
+  assert.equal(r.peakDate, '2024-01-15');
+  assert.equal(r.troughDate, days[5].date);
+  assert.equal(r.recoveryDate, null);
+  assert.ok(Math.abs(r.currentDrawdown - expected) < 1e-12);
+});
+
+test('最大回撤：先漲後跌再創新高時記錄波峰日、波谷日與恢復日，創新高後當前回撤歸零', () => {
+  const game = createGame({ seed: 51, startDate: '2024-01-15', initialCash: 1000000, monthlyContribution: 0 });
+  // 第 21 個交易日收盤：第 17 日創高後回落、第 20 日為最深波谷，尚未回到波峰
+  advance(game, TICKS_PER_DAY * 21);
+  let days = buyHoldCloses(game);
+  const peak = days[16].assets;
+  const trough = days[19].assets;
+  assert.ok(days.slice(0, 16).every((d) => d.assets < peak) && days[0].assets > 1000000);
+  assert.ok(days[20].assets < peak && days[20].assets > trough);
+  let r = game.report().buyHold;
+  assert.ok(Math.abs(r.maxDrawdown - (trough / peak - 1)) < 1e-12);
+  assert.equal(r.peakDate, days[16].date);
+  assert.equal(r.troughDate, days[19].date);
+  assert.equal(r.recoveryDate, null);
+  assert.ok(Math.abs(r.currentDrawdown - (days[20].assets / peak - 1)) < 1e-12);
+
+  // 第 24 日收盤首次超越第 17 日波峰，之後到第 30 日收盤創新高
+  advance(game, TICKS_PER_DAY * 9);
+  days = buyHoldCloses(game);
+  assert.ok(days.slice(20, 23).every((d) => d.assets < peak) && days[23].assets >= peak);
+  assert.ok(days.slice(0, 29).every((d) => d.assets < days[29].assets));
+  r = game.report().buyHold;
+  assert.ok(Math.abs(r.maxDrawdown - (trough / peak - 1)) < 1e-12);
+  assert.equal(r.peakDate, days[16].date);
+  assert.equal(r.troughDate, days[19].date);
+  assert.equal(r.recoveryDate, days[23].date);
+  assert.equal(r.currentDrawdown, 0);
+});
+
+// 獨立手算：由收盤總資產序列（含開局基準）算出日報酬樣本標準差 × √260，以及兩兩比較的最大回撤
+function handRisk(values) {
+  const daily = values.slice(1).map((v, i) => v / values[i] - 1);
+  const m = daily.reduce((a, b) => a + b, 0) / daily.length;
+  const sd = Math.sqrt(daily.reduce((a, b) => a + (b - m) ** 2, 0) / (daily.length - 1));
+  let mdd = 0;
+  for (let i = 0; i < values.length; i++) for (let j = i + 1; j < values.length; j++) mdd = Math.min(mdd, values[j] / values[i] - 1);
+  return { volatility: sd * Math.sqrt(260), maxDrawdown: mdd };
+}
+
+test('風險調整指標：年化波動率、夏普比率與卡瑪比率與獨立手算相符', () => {
+  const game = createGame({ seed: 51, startDate: '2024-01-15', initialCash: 1000000, monthlyContribution: 0 });
+  game.order({ side: 'buy', shares: 5000 });
+  advance(game, TICKS_PER_DAY * 25);
+  const { cash, shares } = game.account();
+  const values = [1].concat(game.candles().slice(HISTORY_DAYS).map((c) => (cash + shares * c.close) / 1000000));
+  const hand = handRisk(values);
+  const r = game.report();
+  const cagr = Math.pow(values[values.length - 1], 1 / calendarYears(r.startDate, r.currentDate)) - 1;
+  assert.ok(hand.volatility > 0 && hand.maxDrawdown < 0);
+  assert.ok(Math.abs(r.user.maxDrawdown - hand.maxDrawdown) < 1e-12);
+  assert.ok(Math.abs(r.user.annualizedVolatility - hand.volatility) < 1e-12);
+  assert.ok(Math.abs(r.user.sharpeRatio - cagr / hand.volatility) < 1e-9);
+  assert.ok(Math.abs(r.user.calmarRatio - cagr / Math.abs(hand.maxDrawdown)) < 1e-9);
+});
+
+test('風險調整指標：未滿 5 個交易日為空值，滿 5 個交易日即計算波動率；零波動與零回撤時夏普與卡瑪為空值', () => {
+  const game = createGame({ seed: 51, startDate: '2024-01-15', initialCash: 1000000, monthlyContribution: 0 });
+  game.order({ side: 'buy', shares: 5000 });
+  advance(game, TICKS_PER_DAY * 4);
+  let r = game.report();
+  assert.equal(r.liveDays, 4);
+  for (const k of ['user', 'buyHold']) {
+    assert.equal(r[k].annualizedVolatility, null);
+    assert.equal(r[k].sharpeRatio, null);
+    assert.equal(r[k].calmarRatio, null);
+  }
+  advance(game, TICKS_PER_DAY);
+  r = game.report();
+  assert.equal(r.liveDays, 5);
+  assert.ok(r.user.annualizedVolatility > 0);
+  // 年化報酬率未滿 20 個交易日為空值，比率也跟著為空值
+  assert.equal(r.user.sharpeRatio, null);
+  assert.equal(r.user.calmarRatio, null);
+
+  // 從未下單且無每月入金：總資產恆等於初始資金，波動率與最大回撤皆為 0
+  const idle = createGame({ seed: 51, startDate: '2024-01-15', initialCash: 1000000, monthlyContribution: 0 });
+  advance(idle, TICKS_PER_DAY * 30);
+  const u = idle.report().user;
+  assert.equal(u.annualizedReturn, 0);
+  assert.equal(u.annualizedVolatility, 0);
+  assert.equal(u.maxDrawdown, 0);
+  assert.equal(u.peakDate, null);
+  assert.equal(u.currentDrawdown, 0);
+  assert.equal(u.sharpeRatio, null);
+  assert.equal(u.calmarRatio, null);
+  for (const v of Object.values(idle.report().buyHold)) assert.ok(v === null || typeof v === 'string' || Number.isFinite(v));
+});
+
+test('比較基準一致性：定期定額以累計投入報酬率淨值套用相同的回撤與波動率公式，盤中當前回撤反映當下 tick 價', () => {
+  const game = createGame({ seed: 51, startDate: '2024-01-15', initialCash: 1000000, monthlyContribution: 10000 });
+  advance(game, TICKS_PER_DAY * 70 + 135);
+  const { dca } = game.benchmarks();
+  const live = game.candles().slice(HISTORY_DAYS);
+  // 逐日由入金次數與定期定額成交紀錄獨立重建：第一個即時交易日與每個跨月的交易日各入金一次
+  let contributions = 0;
+  const values = [1].concat(live.map((c, k) => {
+    if (k === 0 || c.date.slice(0, 7) !== live[k - 1].date.slice(0, 7)) contributions += 10000;
+    const bought = dca.trades.filter((t) => t.day <= HISTORY_DAYS + k);
+    const spent = bought.reduce((s, t) => s + t.price * t.shares + t.fee, 0);
+    const held = bought.reduce((s, t) => s + t.shares, 0);
+    const close = k === live.length - 1 ? game.price() : c.close;
+    return (contributions - spent + held * close) / contributions;
+  }));
+  assert.equal(contributions, 40000); // 1 月至 4 月
+  const hand = handRisk(values);
+  const r = game.report().dca;
+  assert.ok(hand.maxDrawdown < 0);
+  assert.ok(Math.abs(r.maxDrawdown - hand.maxDrawdown) < 1e-12);
+  assert.ok(Math.abs(r.annualizedVolatility - hand.volatility) < 1e-12);
+  const peak = Math.max(...values);
+  assert.ok(Math.abs(r.currentDrawdown - (values[values.length - 1] / peak - 1)) < 1e-12);
 });

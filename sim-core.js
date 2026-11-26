@@ -423,14 +423,55 @@
       const currentDate = liveDays > 0 ? candles[candles.length - 1].date : null;
       // 年化以起始日期至當下交易日的日曆天數 ÷ 365.25 為年數；未滿 20 個即時交易日或總資產 ≤ 0 時不年化
       const years = currentDate ? (parseDate(currentDate) - parseDate(startDate)) / MS_PER_DAY / 365.25 : 0;
-      function performance(c, n, invested) {
+      // 風險指標的序列：起始基準點（報酬率 0%、日期為起始日期）接續每個即時交易日（已收盤用收盤值，當日用當下值）
+      const curve = closedCurve.slice();
+      const latest = latestCurvePoint();
+      if (latest) curve.push(latest);
+      const series = [{ date: startDate, user: 0, buyHold: 0, dca: 0 }].concat(curve.map(function (p) {
+        return { date: candles[p.day].date, user: p.user, buyHold: p.buyHold, dca: p.dca };
+      }));
+      // 依累計投入報酬率口徑（ADR-0002）以「1 + 報酬率」計算回撤、波動率與風險調整比率
+      function risk(key, annualizedReturn) {
+        let peak = 0, peakDate = null, maxDrawdown = 0, ddPeak = 0, ddPeakDate = null, troughIndex = -1, drawdown = 0;
+        const values = series.map(function (p) { return 1 + p[key]; });
+        values.forEach(function (v, i) {
+          if (v > peak) { peak = v; peakDate = series[i].date; }
+          drawdown = (v - peak) / peak;
+          if (drawdown < maxDrawdown) { maxDrawdown = drawdown; ddPeak = peak; ddPeakDate = peakDate; troughIndex = i; }
+        });
+        let recoveryDate = null;
+        for (let i = troughIndex + 1; troughIndex >= 0 && i < values.length; i++) {
+          if (values[i] >= ddPeak) { recoveryDate = series[i].date; break; }
+        }
+        // 年化波動率：相鄰點日報酬率的樣本標準差 × √260；未滿 5 個即時交易日不計算
+        let volatility = null;
+        if (liveDays >= 5) {
+          const daily = values.slice(1).map(function (v, i) { return v / values[i] - 1; });
+          const mean = daily.reduce(function (s, x) { return s + x; }, 0) / daily.length;
+          const variance = daily.reduce(function (s, x) { return s + (x - mean) * (x - mean); }, 0) / (daily.length - 1);
+          volatility = Math.sqrt(variance) * Math.sqrt(260);
+        }
+        const ratioReady = volatility !== null && annualizedReturn !== null;
+        return {
+          maxDrawdown: maxDrawdown,
+          peakDate: ddPeakDate,
+          troughDate: troughIndex >= 0 ? series[troughIndex].date : null,
+          recoveryDate: recoveryDate,
+          currentDrawdown: drawdown,
+          annualizedVolatility: volatility,
+          // 夏普比率（無風險利率 0%）與卡瑪比率；分母為 0 或年化報酬率為空值時不計算
+          sharpeRatio: ratioReady && volatility > 0 ? annualizedReturn / volatility : null,
+          calmarRatio: ratioReady && maxDrawdown < 0 ? annualizedReturn / -maxDrawdown : null,
+        };
+      }
+      function performance(key, c, n, invested) {
         const totalAssets = c + n * price;
         const totalReturn = invested > 0 ? (totalAssets - invested) / invested : 0;
         const annualizedReturn = liveDays >= 20 && totalAssets > 0 && years > 0 ? Math.pow(1 + totalReturn, 1 / years) - 1 : null;
-        return { investedCapital: invested, totalAssets: totalAssets, totalPnl: totalAssets - invested, totalReturn: totalReturn, annualizedReturn: annualizedReturn };
+        return Object.assign({ investedCapital: invested, totalAssets: totalAssets, totalPnl: totalAssets - invested, totalReturn: totalReturn, annualizedReturn: annualizedReturn }, risk(key, annualizedReturn));
       }
       const a = account();
-      const user = Object.assign(performance(cash, shares, investedCapital), {
+      const user = Object.assign(performance('user', cash, shares, investedCapital), {
         realizedPnl: a.realizedPnl,
         unrealizedPnl: a.unrealizedPnl,
         totalFees: trades.reduce(function (s, t) { return s + t.fee; }, 0),
@@ -447,8 +488,8 @@
         simYear: simYear,
         expired: expired(),
         user: user,
-        buyHold: performance(buyHold.cash, buyHold.shares, buyHold.investedCapital),
-        dca: performance(dca.cash, dca.shares, dca.investedCapital),
+        buyHold: performance('buyHold', buyHold.cash, buyHold.shares, buyHold.investedCapital),
+        dca: performance('dca', dca.cash, dca.shares, dca.investedCapital),
       };
     }
 
