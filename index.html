@@ -74,6 +74,7 @@
     <button data-speed="20">20x</button>
   </span>
   <button id="reveal">揭曉：關</button>
+  <button id="ma">均線：關</button>
   <span>現價 <b id="price"></b></span>
   <span><b id="date"></b>　第 <b id="year"></b> 年</span>
   <span class="m-only">漲跌 <b id="change"></b></span>
@@ -175,12 +176,19 @@
 
   // 資產曲線的線色，和績效區的色塊一致
   const SERIES_COLORS = { user: '#4dabf7', buyHold: '#da77f2', dca: '#ffa94d' };
+  // 均線使用中性、不與紅漲綠跌衝突的顏色
+  const MA_SERIES = [
+    { key: 'ma5', label: '5均', color: '#ffd43b' },
+    { key: 'ma20', label: '20均', color: '#74c0fc' },
+    { key: 'ma60', label: '60均', color: '#e599f7' },
+  ];
 
   const $ = (id) => document.getElementById(id);
   let game;
   const showBenchmark = { buyHold: true, dca: true };
   let playing = true;
   let reveal = false;
+  let showMa = false;
   let period = 'day'; // K 棒週期：day、week、month
   let speed = 1;
   let pendingTicks = 0;
@@ -193,7 +201,7 @@
   function saveGame() {
     if (saveBlocked) return;
     try {
-      localStorage.setItem(SAVE_KEY, JSON.stringify({ game: game.save(), ui: { speed, showBenchmark, reveal, period } }));
+      localStorage.setItem(SAVE_KEY, JSON.stringify({ game: game.save(), ui: { speed, showBenchmark, reveal, period, showMa } }));
     } catch (e) { /* 無痕模式或空間不足時就不存 */ }
   }
   function loadSave() {
@@ -213,6 +221,13 @@
     revealBtn.classList.toggle('active', reveal);
   }
   revealBtn.onclick = () => setReveal(!reveal);
+  const maBtn = $('ma');
+  function setShowMa(v) {
+    showMa = v;
+    maBtn.textContent = showMa ? '均線：開' : '均線：關';
+    maBtn.classList.toggle('active', showMa);
+  }
+  maBtn.onclick = () => setShowMa(!showMa);
   function setSpeed(s) {
     speed = s;
     document.querySelectorAll('[data-speed]').forEach((b) => b.classList.toggle('active', Number(b.dataset.speed) === s));
@@ -508,12 +523,20 @@
     const plotW = plotWidth();
     const priceH = h * 0.6, volTop = priceH + 8, volBottom = h * 0.75, volH = volBottom - volTop;
     const eqTop = volBottom + 8, eqBottom = h - DATE_AXIS_H, eqH = eqBottom - eqTop;
+    const indicators = showMa ? game.indicators(period) : null;
+    const maText = (v, m) => `${m.label} ${v[m.key] !== null ? v[m.key].toFixed(2) : '-'}`;
     let hi = -Infinity, lo = Infinity, maxVol = 0;
-    for (const c of visible) {
+    visible.forEach((c, i) => {
       hi = Math.max(hi, c.high);
       lo = Math.min(lo, c.low);
       maxVol = Math.max(maxVol, c.volume);
-    }
+      if (indicators) {
+        const v = indicators[first + i];
+        for (const m of MA_SERIES) {
+          if (v[m.key] !== null) { hi = Math.max(hi, v[m.key]); lo = Math.min(lo, v[m.key]); }
+        }
+      }
+    });
     const pad = (hi - lo) * 0.05;
     hi += pad; lo -= pad;
     const y = (p) => ((hi - p) / (hi - lo)) * priceH;
@@ -606,6 +629,26 @@
       ctx.fillRect(x - bodyW / 2, volBottom - vh, bodyW, vh);
     });
 
+    if (indicators) {
+      const from = Math.max(0, first - 1);
+      const to = Math.min(n - 1, first + visible.length);
+      ctx.lineWidth = 1.25;
+      for (const m of MA_SERIES) {
+        ctx.strokeStyle = m.color;
+        ctx.beginPath();
+        let started = false;
+        for (let i = from; i <= to; i++) {
+          const val = indicators[i][m.key];
+          if (val === null) { started = false; continue; }
+          const xx = xOf(i), yy = y(val);
+          if (!started) { ctx.moveTo(xx, yy); started = true; }
+          else ctx.lineTo(xx, yy);
+        }
+        ctx.stroke();
+      }
+      ctx.lineWidth = 1;
+    }
+
     // 買賣點：期間內有買進就在 K 棒下方標 ▲，有賣出就在上方標 ▼，兩者都有就都標
     const trades = game.trades();
     const tradesIn = (b, side) => trades.filter((t) => t.side === side && t.day >= b.firstDay && t.day <= b.lastDay).length;
@@ -628,6 +671,22 @@
     }
     ctx.lineWidth = 1;
     ctx.restore();
+
+    if (indicators) {
+      const latest = indicators[n - 1];
+      ctx.font = '12px system-ui';
+      const items = MA_SERIES.map((m) => ({ color: m.color, text: maText(latest, m) }));
+      const totalW = items.reduce((s, it) => s + ctx.measureText(it.text).width + 10, 0) + 6;
+      const ly = priceH - 22;
+      ctx.fillStyle = 'rgba(17, 17, 17, 0.75)';
+      ctx.fillRect(4, ly, totalW, 18);
+      let lx = 10;
+      for (const it of items) {
+        ctx.fillStyle = it.color;
+        ctx.fillText(it.text, lx, ly + 13);
+        lx += ctx.measureText(it.text).width + 10;
+      }
+    }
 
     // 日期刻度：每隔固定根數標一個日期，刻度對齊固定的 K 棒索引，平移時不會跳動
     // 一個日期標籤約 70px 寬，間距至少 84px；離左右邊緣不到半個標籤寬（36px）的不標，避免被裁切
@@ -652,10 +711,11 @@
       const head = period === 'day' ? fmtDateWeek(c.startDate) : `${fmtDate(c.startDate)}–${fmtDate(c.endDate)}`;
       const ohlc = `開 ${c.open.toFixed(2)}　高 ${c.high.toFixed(2)}　低 ${c.low.toFixed(2)}　收 ${c.close.toFixed(2)}`;
       const counts = period === 'day' ? [] : [`買進 ${tradesIn(c, 'buy')} 筆　賣出 ${tradesIn(c, 'sell')} 筆`];
-      const text = [head, ohlc, `量 ${c.volume}`, ...counts].join('　');
+      const maLine = indicators ? [MA_SERIES.map((m) => maText(indicators[hovered], m)).join('　')] : [];
+      const text = [head, ohlc, `量 ${c.volume}`, ...counts, ...maLine].join('　');
       ctx.font = '12px system-ui';
       // 窄螢幕放不下一行時拆成多行
-      const lines = ctx.measureText(text).width + 20 > w ? [`${head}　量 ${c.volume}`, ohlc, ...counts] : [text];
+      const lines = ctx.measureText(text).width + 20 > w ? [`${head}　量 ${c.volume}`, ohlc, ...counts, ...maLine] : [text];
       // 放在週期按鈕下方
       ctx.fillStyle = 'rgba(17, 17, 17, 0.85)';
       ctx.fillRect(4, 36, Math.max(...lines.map((l) => ctx.measureText(l).width)) + 12, 6 + lines.length * 16);
@@ -709,6 +769,7 @@
   if (saved) {
     setSpeed(saved.ui.speed);
     setReveal(saved.ui.reveal);
+    setShowMa(Boolean(saved.ui.showMa));
     setPeriod(saved.ui.period || 'day'); // 加入 K 棒週期之前的存檔沒有這個欄位
     for (const key of ['buyHold', 'dca']) $(`show-${key}`).checked = showBenchmark[key] = saved.ui.showBenchmark[key];
     setPlaying(false);

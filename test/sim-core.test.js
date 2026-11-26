@@ -683,3 +683,61 @@ test('資產曲線依週 K、月 K 取點：即時區段一根一點，取期末
   assert.equal(game.equityCurve('week').length, 8);
   assert.equal(game.equityCurve('month').length, 2);
 });
+
+// 獨立以收盤價序列計算 N 根均線，不足 N 根時為 null
+function expectedMa(bars, n) {
+  return bars.map((_, i) => {
+    if (i + 1 < n) return null;
+    let sum = 0;
+    for (let j = i + 1 - n; j <= i; j++) sum += bars[j].close;
+    return sum / n;
+  });
+}
+
+function assertMaMatches(bars, indicators) {
+  assert.equal(indicators.length, bars.length);
+  for (const [key, n] of [['ma5', 5], ['ma20', 20], ['ma60', 60]]) {
+    const expected = expectedMa(bars, n);
+    indicators.forEach((v, i) => {
+      if (expected[i] === null) assert.equal(v[key], null);
+      else assert.ok(Math.abs(v[key] - expected[i]) < 1e-9);
+    });
+  }
+}
+
+test('均線：日 K 的 5、20、60 均線數值正確，不足 N 根時為 null', () => {
+  const game = createGame({ seed: 7 });
+  const daily = game.candles();
+  const indicators = game.indicators();
+  assert.equal(indicators[4].ma5 !== null && indicators[3].ma5 === null, true);
+  assert.equal(indicators[19].ma20 !== null && indicators[18].ma20 === null, true);
+  assert.equal(indicators[59].ma60 !== null && indicators[58].ma60 === null, true);
+  assertMaMatches(daily, indicators);
+});
+
+test('均線：週 K 與月 K 以該週期收盤價計算，不足 N 根時為 null，且盤中隨當下 tick 價即時更新', () => {
+  const game = createGame({ seed: 7, startDate: '2024-01-01' });
+  // 預產 250 個交易日約 51 週、12 個月，週 K 的 60 均線與月 K 的 20、60 均線此時都應為 null
+  const initWeeks = game.indicators('week');
+  const initMonths = game.indicators('month');
+  assert.ok(initWeeks.length > 20 && initWeeks.length < 60);
+  assert.ok(initMonths.length > 5 && initMonths.length < 20);
+  assert.equal(initWeeks.at(-1).ma60, null);
+  assert.equal(initMonths.at(-1).ma20, null);
+
+  // 推進 250 個交易日又 35 個 tick（讓週 K 超過 60 根、月 K 超過 20 根，且最後一根都在盤中）
+  advance(game, TICKS_PER_DAY * 250 + 35);
+  for (const period of ['day', 'week', 'month']) {
+    const bars = game.candles(period);
+    assert.equal(bars.at(-1).close, game.price());
+    assertMaMatches(bars, game.indicators(period));
+  }
+
+  // 再推進 100 個 tick，確認盤中最新一根的 5 均線隨現價變化而更新
+  const beforeLast = game.indicators('week').at(-1).ma5;
+  advance(game, 100);
+  const afterWeeks = game.candles('week');
+  const afterLast = game.indicators('week').at(-1).ma5;
+  assert.notEqual(afterLast, beforeLast);
+  assert.ok(Math.abs(afterLast - expectedMa(afterWeeks, 5).at(-1)) < 1e-9);
+});

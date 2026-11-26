@@ -338,6 +338,24 @@
     }
     const isAggregate = function (period) { return period === 'week' || period === 'month'; };
 
+    // 計算指定 K 棒序列的均線（5、20、60）；不足 N 根時為 null
+    function computeIndicators(bars) {
+      const periods = [5, 20, 60];
+      const sums = [0, 0, 0];
+      return bars.map(function (b, i) {
+        for (let k = 0; k < periods.length; k++) {
+          const n = periods[k];
+          sums[k] += b.close;
+          if (i >= n) sums[k] -= bars[i - n].close;
+        }
+        return {
+          ma5: i + 1 >= 5 ? sums[0] / 5 : null,
+          ma20: i + 1 >= 20 ? sums[1] / 20 : null,
+          ma60: i + 1 >= 60 ? sums[2] / 60 : null,
+        };
+      });
+    }
+
     // 進度：day 是當下 K 棒的索引，tick 是當日已經過的 tick 數（TICKS_PER_DAY 表示已收盤）
     function progress() { return { day: candles.length - 1, tick: tickInDay }; }
 
@@ -402,6 +420,10 @@
       candles: function (period) {
         if (isAggregate(period)) return aggregate(period);
         return candles.map(function (c) { return Object.assign({}, c); });
+      },
+      // 回傳各根 K 棒對應的技術指標，長度與位置和 candles(period) 對齊
+      indicators: function (period) {
+        return computeIndicators(isAggregate(period) ? aggregate(period) : candles);
       },
       // 回傳每個交易日的市場狀態（bull／bear／sideways）與跳躍標記，和 candles() 對齊
       dayMarkers: function () { return markers.map(function (m) { return Object.assign({}, m); }); },
