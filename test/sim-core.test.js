@@ -1397,3 +1397,37 @@ test('分年報酬明細：到期時共 30 個模擬年度且皆已滿一年，�
     assert.ok(Math.abs(rows[5][key] - (growthAt(game, rows[5].endDate, key) / growthAt(game, rows[4].endDate, key) - 1)) < 1e-12, key);
   }
 });
+
+test('報告曲線：開局未推進時為空；之後每個即時交易日一點且日期對齊，累積報酬率與回撤幅度符合獨立手算，末點等於總覽報酬率與當前回撤', () => {
+  const game = createGame({ seed: 51, startDate: '2024-01-15', initialCash: 1000000, monthlyContribution: 0 });
+  assert.deepEqual(game.report().curve, []);
+  game.order({ side: 'buy', shares: 5000 });
+  advance(game, TICKS_PER_DAY * 25 + 100); // 第 26 個即時交易日盤中
+  const r = game.report();
+  const live = game.candles().slice(HISTORY_DAYS);
+  assert.equal(r.curve.length, r.liveDays);
+  assert.deepEqual(r.curve.map((p) => p.date), live.map((c) => c.date));
+  // 使用者：由固定的現金與股數逐日以收盤價（最後一點為當下 tick 價）重建「1 + 累計投入報酬率」
+  const { cash, shares } = game.account();
+  const values = live.map((c, i) => (cash + shares * (i === live.length - 1 ? game.price() : c.close)) / 1000000);
+  let peak = 1;
+  values.forEach((v, i) => {
+    peak = Math.max(peak, v);
+    assert.ok(Math.abs(r.curve[i].user - (v - 1)) < 1e-12);
+    assert.ok(Math.abs(r.curve[i].drawdown.user - (v / peak - 1)) < 1e-12);
+  });
+  const last = r.curve.at(-1);
+  for (const key of ['user', 'buyHold', 'dca']) {
+    assert.ok(Math.abs(last[key] - r[key].totalReturn) < 1e-12, key);
+    assert.equal(last.drawdown[key], r[key].currentDrawdown, key);
+    assert.equal(Math.min(...r.curve.map((p) => p.drawdown[key])), r[key].maxDrawdown, key);
+    assert.ok(r.curve.every((p) => p.drawdown[key] <= 0), key);
+    // 每點回撤 = (1 + 報酬率) ÷ 含起始基準點 1 在內的歷史最高點 − 1
+    let high = 1;
+    r.curve.forEach((p) => {
+      high = Math.max(high, 1 + p[key]);
+      assert.ok(Math.abs(p.drawdown[key] - ((1 + p[key]) / high - 1)) < 1e-12, key);
+    });
+  }
+  assert.ok(r.user.maxDrawdown < 0);
+});

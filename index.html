@@ -49,6 +49,9 @@
   #report th, #report td { padding: 4px 8px; white-space: nowrap; }
   #report th:first-child, #report td:first-child { text-align: left; }
   #report .note { color: #888; margin-top: 4px; }
+  #report .toggles { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
+  #report .toggles label { cursor: pointer; }
+  #report-chart { display: block; width: 100%; height: 360px; cursor: crosshair; touch-action: pan-y; } /* 只讓瀏覽器處理上下捲動，左右拖曳交給十字線 */
 
   @media (max-width: 768px) {
     html { touch-action: pan-y; } /* 只允許上下捲動，避免兩指捏合或連點兩下誤觸頁面縮放 */
@@ -186,6 +189,14 @@
       </table>
     </div>
     <div id="report-note" class="note"></div>
+    <h3>累積報酬與回撤曲線</h3>
+    <div class="toggles">
+      <span><span class="swatch" style="background: var(--user)"></span>我的操作</span>
+      <label><input type="checkbox" id="report-show-buyHold" checked><span class="swatch" style="background: var(--buyHold)"></span>買進持有</label>
+      <label><input type="checkbox" id="report-show-dca" checked><span class="swatch" style="background: var(--dca)"></span>定期定額</label>
+    </div>
+    <canvas id="report-chart"></canvas>
+    <div class="note">上圖為累積報酬率（累計投入報酬率），下圖為回撤曲線（水下圖）：當下相對歷史最高點的跌幅，起始日期視為報酬率 0% 的波峰起點。</div>
     <h3>我的操作明細</h3>
     <div class="scroll-x">
       <table><tbody id="report-user"></tbody></table>
@@ -508,12 +519,114 @@
       ? '<tr><td colspan="5">尚未開始</td></tr>'
       : r.yearlyReturns.map((y) => `<tr><td>第 ${y.year} 年${y.inProgress ? '（累計至今）' : ''}</td>`
         + `<td>${fmtDate(y.startDate)}～${fmtDate(y.endDate)}</td>${cols.map((k) => `<td>${pct(y[k])}</td>`).join('')}</tr>`).join('');
+    reportCurve = r.curve;
+    reportHover = null;
+    drawReportChart();
   }
+
+  // 報告雙圖表：上為累積報酬曲線、下為回撤曲線（水下圖），共用同一條時間軸；比較基準勾選獨立於主畫面
+  const reportCanvas = $('report-chart');
+  const reportCtx = reportCanvas.getContext('2d');
+  const reportShow = { buyHold: true, dca: true };
+  let reportCurve = [];
+  let reportHover = null; // 十字線所在的報告曲線點索引
+  function drawReportChart() {
+    const dpr = window.devicePixelRatio || 1;
+    const w = reportCanvas.clientWidth, h = reportCanvas.clientHeight;
+    if (reportCanvas.width !== w * dpr || reportCanvas.height !== h * dpr) {
+      reportCanvas.width = w * dpr;
+      reportCanvas.height = h * dpr;
+    }
+    const rctx = reportCtx;
+    rctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    rctx.clearRect(0, 0, w, h);
+    rctx.font = '11px system-ui';
+    rctx.fillStyle = '#888';
+    const n = reportCurve.length;
+    if (n === 0) { rctx.fillText('尚未開始', 8, 20); return; }
+    const plotW = w - AXIS_W;
+    const keys = ['user', 'buyHold', 'dca'].filter((k) => k === 'user' || reportShow[k]);
+    // 第 0 點是起始基準點（報酬率 0%、回撤 0%），之後每個即時交易日一點
+    const xOf = (i) => (n === 1 ? plotW : (i / n) * plotW);
+    const panes = [
+      { top: 8, bottom: h * 0.6, value: (p, k) => p[k], label: '累積報酬' },
+      { top: h * 0.6 + 16, bottom: h - DATE_AXIS_H, value: (p, k) => p.drawdown[k], label: '回撤' },
+    ];
+    for (const pane of panes) {
+      let hi = 0, lo = 0;
+      for (const p of reportCurve) for (const k of keys) { hi = Math.max(hi, pane.value(p, k)); lo = Math.min(lo, pane.value(p, k)); }
+      const pad = (hi - lo) * 0.1 || 0.01;
+      if (hi > 0) hi += pad;
+      lo -= pad;
+      const y = (v) => pane.top + ((hi - v) / (hi - lo)) * (pane.bottom - pane.top);
+      rctx.strokeStyle = '#333';
+      rctx.fillStyle = '#888';
+      for (let i = 0; i <= 4; i++) {
+        const v = lo + ((hi - lo) * i) / 4;
+        rctx.beginPath(); rctx.moveTo(0, y(v)); rctx.lineTo(plotW, y(v)); rctx.stroke();
+        rctx.fillText(pct(v), plotW + 6, y(v) + 4);
+      }
+      rctx.strokeStyle = '#666';
+      rctx.beginPath(); rctx.moveTo(0, y(0)); rctx.lineTo(plotW, y(0)); rctx.stroke();
+      rctx.fillText(pane.label, 4, pane.top + 12);
+      rctx.lineWidth = 1.5;
+      for (const k of keys.slice().reverse()) { // 我的操作最後畫，疊在比較基準上方
+        rctx.strokeStyle = SERIES_COLORS[k];
+        rctx.beginPath();
+        rctx.moveTo(0, y(0));
+        reportCurve.forEach((p, i) => rctx.lineTo(xOf(i + 1), y(pane.value(p, k))));
+        rctx.stroke();
+      }
+      rctx.lineWidth = 1;
+    }
+    // 日期刻度：約每 110px 標一個，離左右邊緣不到半個標籤寬的不標
+    rctx.fillStyle = '#888';
+    rctx.textAlign = 'center';
+    const ticks = Math.max(1, Math.floor(plotW / 110));
+    for (let t = 0; t <= ticks; t++) {
+      const i = Math.round(((n - 1) * t) / ticks);
+      const x = xOf(i + 1);
+      if (x >= 36 && x <= plotW - 36) rctx.fillText(fmtDate(reportCurve[i].date), x, h - 5);
+    }
+    rctx.textAlign = 'start';
+    if (reportHover === null) return;
+    const p = reportCurve[reportHover];
+    const x = xOf(reportHover + 1);
+    rctx.strokeStyle = '#888';
+    rctx.beginPath(); rctx.moveTo(x, 0); rctx.lineTo(x, h - DATE_AXIS_H); rctx.stroke();
+    const names = { user: '我的操作', buyHold: '買進持有', dca: '定期定額' };
+    const lines = [{ text: fmtDateWeek(p.date), color: '#ddd' }].concat(keys.map((k) => ({
+      text: `${names[k]}　報酬 ${pct(p[k])}　回撤 ${pct(p.drawdown[k])}`, color: SERIES_COLORS[k],
+    })));
+    rctx.font = '12px system-ui';
+    const boxW = Math.max(...lines.map((l) => rctx.measureText(l.text).width)) + 12;
+    const boxX = x + 8 + boxW <= plotW ? x + 8 : Math.max(0, x - 8 - boxW); // 靠右放不下時放到十字線左側
+    rctx.fillStyle = 'rgba(17, 17, 17, 0.85)';
+    rctx.fillRect(boxX, 24, boxW, 6 + lines.length * 16);
+    lines.forEach((l, i) => { rctx.fillStyle = l.color; rctx.fillText(l.text, boxX + 6, 39 + i * 16); });
+  }
+  // 滑鼠移動或手指點按／左右拖曳時，十字線跟著最接近的交易日
+  function hoverReportAt(clientX) {
+    const n = reportCurve.length;
+    if (n === 0) return;
+    const plotW = reportCanvas.clientWidth - AXIS_W;
+    const x = clientX - reportCanvas.getBoundingClientRect().left;
+    reportHover = Math.min(n - 1, Math.max(0, n === 1 ? 0 : Math.round((x / plotW) * n) - 1));
+    drawReportChart();
+  }
+  reportCanvas.addEventListener('mousemove', (e) => hoverReportAt(e.clientX));
+  reportCanvas.addEventListener('mouseleave', () => { reportHover = null; drawReportChart(); });
+  reportCanvas.addEventListener('touchstart', (e) => hoverReportAt(e.touches[0].clientX), { passive: true });
+  reportCanvas.addEventListener('touchmove', (e) => hoverReportAt(e.touches[0].clientX), { passive: true });
+  for (const key of ['buyHold', 'dca']) {
+    $(`report-show-${key}`).onchange = (e) => { reportShow[key] = e.target.checked; drawReportChart(); };
+  }
+  window.addEventListener('resize', () => { if (!reportEl.hidden) drawReportChart(); });
   function openReport() {
     if (playing) setPlaying(false);
     closeSheet();
+    reportEl.hidden = false; // 先顯示再繪製，報告圖表才量得到寬度
     renderReport();
-    reportEl.hidden = false;
   }
   function closeReport() { reportEl.hidden = true; }
   $('report-btn').onclick = openReport;

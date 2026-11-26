@@ -538,6 +538,16 @@
         ['user', 'buyHold', 'dca'].forEach(function (k) { row[k] = (1 + p[k]) / (1 + prevYearEnd[k]) - 1; });
       });
       if (yearlyReturns.length > 0 && !expired()) yearlyReturns[yearlyReturns.length - 1].inProgress = true;
+      // 報告曲線：每個即時交易日一點，含三方累積報酬率與當下回撤幅度（相對含起始基準點 1 在內的歷史最高點）
+      const peaks = { user: 1, buyHold: 1, dca: 1 };
+      const reportCurve = series.slice(1).map(function (p) {
+        const point = { date: p.date, user: p.user, buyHold: p.buyHold, dca: p.dca, drawdown: {} };
+        ['user', 'buyHold', 'dca'].forEach(function (k) {
+          peaks[k] = Math.max(peaks[k], 1 + p[k]);
+          point.drawdown[k] = (1 + p[k] - peaks[k]) / peaks[k];
+        });
+        return point;
+      });
       return {
         seed: seed,
         startDate: startDate,
@@ -548,6 +558,7 @@
         user: user,
         tradeStats: tradeStats,
         yearlyReturns: yearlyReturns,
+        curve: reportCurve,
         buyHold: performance('buyHold', buyHold.cash, buyHold.shares, buyHold.investedCapital),
         dca: performance('dca', dca.cash, dca.shares, dca.investedCapital),
       };
