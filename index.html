@@ -75,6 +75,7 @@
   </span>
   <button id="reveal">揭曉：關</button>
   <button id="ma">均線：關</button>
+  <button id="kd">KD：關</button>
   <span>現價 <b id="price"></b></span>
   <span><b id="date"></b>　第 <b id="year"></b> 年</span>
   <span class="m-only">漲跌 <b id="change"></b></span>
@@ -176,11 +177,15 @@
 
   // 資產曲線的線色，和績效區的色塊一致
   const SERIES_COLORS = { user: '#4dabf7', buyHold: '#da77f2', dca: '#ffa94d' };
-  // 均線使用中性、不與紅漲綠跌衝突的顏色
+  // 均線與 KD 使用中性、不與紅漲綠跌衝突的顏色
   const MA_SERIES = [
     { key: 'ma5', label: '5均', color: '#ffd43b' },
     { key: 'ma20', label: '20均', color: '#74c0fc' },
     { key: 'ma60', label: '60均', color: '#e599f7' },
+  ];
+  const KD_SERIES = [
+    { key: 'k', label: 'K', color: '#ffd43b' },
+    { key: 'd', label: 'D', color: '#74c0fc' },
   ];
 
   const $ = (id) => document.getElementById(id);
@@ -189,6 +194,7 @@
   let playing = true;
   let reveal = false;
   let showMa = false;
+  let showKd = false;
   let period = 'day'; // K 棒週期：day、week、month
   let speed = 1;
   let pendingTicks = 0;
@@ -201,7 +207,7 @@
   function saveGame() {
     if (saveBlocked) return;
     try {
-      localStorage.setItem(SAVE_KEY, JSON.stringify({ game: game.save(), ui: { speed, showBenchmark, reveal, period, showMa } }));
+      localStorage.setItem(SAVE_KEY, JSON.stringify({ game: game.save(), ui: { speed, showBenchmark, reveal, period, showMa, showKd } }));
     } catch (e) { /* 無痕模式或空間不足時就不存 */ }
   }
   function loadSave() {
@@ -214,20 +220,19 @@
     playBtn.textContent = playing ? '暫停' : '播放';
   }
   playBtn.onclick = () => setPlaying(!playing);
-  const revealBtn = $('reveal');
-  function setReveal(r) {
-    reveal = r;
-    revealBtn.textContent = reveal ? '揭曉：開' : '揭曉：關';
-    revealBtn.classList.toggle('active', reveal);
+  function makeToggle(id, label, onChange) {
+    const btn = $(id);
+    const set = (v) => {
+      onChange(v);
+      btn.textContent = `${label}：${v ? '開' : '關'}`;
+      btn.classList.toggle('active', v);
+    };
+    btn.onclick = () => set(!btn.classList.contains('active'));
+    return set;
   }
-  revealBtn.onclick = () => setReveal(!reveal);
-  const maBtn = $('ma');
-  function setShowMa(v) {
-    showMa = v;
-    maBtn.textContent = showMa ? '均線：開' : '均線：關';
-    maBtn.classList.toggle('active', showMa);
-  }
-  maBtn.onclick = () => setShowMa(!showMa);
+  const setReveal = makeToggle('reveal', '揭曉', (v) => { reveal = v; });
+  const setShowMa = makeToggle('ma', '均線', (v) => { showMa = v; });
+  const setShowKd = makeToggle('kd', 'KD', (v) => { showKd = v; });
   function setSpeed(s) {
     speed = s;
     document.querySelectorAll('[data-speed]').forEach((b) => b.classList.toggle('active', Number(b.dataset.speed) === s));
@@ -521,16 +526,18 @@
     const first = Math.max(0, Math.floor(start));
     const visible = bs.slice(first, Math.min(n, Math.ceil(start + count)));
     const plotW = plotWidth();
-    const priceH = h * 0.6, volTop = priceH + 8, volBottom = h * 0.75, volH = volBottom - volTop;
-    const eqTop = volBottom + 8, eqBottom = h - DATE_AXIS_H, eqH = eqBottom - eqTop;
-    const indicators = showMa ? game.indicators(period) : null;
-    const maText = (v, m) => `${m.label} ${v[m.key] !== null ? v[m.key].toFixed(2) : '-'}`;
+    const priceH = h * (showKd ? 0.45 : 0.6);
+    const volTop = priceH + 8, volBottom = h * (showKd ? 0.6 : 0.75), volH = volBottom - volTop;
+    const kdTop = volBottom + 8, kdBottom = h * 0.76, kdH = kdBottom - kdTop;
+    const eqTop = (showKd ? kdBottom : volBottom) + 8, eqBottom = h - DATE_AXIS_H, eqH = eqBottom - eqTop;
+    const indicators = (showMa || showKd) ? game.indicators(period) : null;
+    const indText = (v, m) => `${m.label} ${v[m.key] !== null ? v[m.key].toFixed(2) : '-'}`;
     let hi = -Infinity, lo = Infinity, maxVol = 0;
     visible.forEach((c, i) => {
       hi = Math.max(hi, c.high);
       lo = Math.min(lo, c.low);
       maxVol = Math.max(maxVol, c.volume);
-      if (indicators) {
+      if (showMa) {
         const v = indicators[first + i];
         for (const m of MA_SERIES) {
           if (v[m.key] !== null) { hi = Math.max(hi, v[m.key]); lo = Math.min(lo, v[m.key]); }
@@ -555,6 +562,20 @@
     }
 
     const xOf = (index) => (index - start) * slot + slot / 2;
+
+    // KD 窗格：Y 軸固定 0～100，畫出 20、80 參考線
+    const kdY = (v) => kdTop + ((100 - v) / 100) * kdH;
+    if (showKd) {
+      ctx.fillStyle = '#888';
+      ctx.strokeStyle = '#444';
+      ctx.setLineDash([4, 4]);
+      for (const ref of [20, 80]) {
+        const yy = kdY(ref);
+        ctx.beginPath(); ctx.moveTo(0, yy); ctx.lineTo(plotW, yy); ctx.stroke();
+        ctx.fillText(String(ref), plotW + 6, yy + 4);
+      }
+      ctx.setLineDash([]);
+    }
 
     // 資產曲線：Y 軸是報酬率 %，從 0% 起算；預產的歷史區段沒有資料，自然留白
     const series = ['user', 'buyHold', 'dca'].filter((k) => k === 'user' || showBenchmark[k]);
@@ -629,18 +650,18 @@
       ctx.fillRect(x - bodyW / 2, volBottom - vh, bodyW, vh);
     });
 
-    if (indicators) {
+    function drawIndicatorLines(seriesList, yFn) {
       const from = Math.max(0, first - 1);
       const to = Math.min(n - 1, first + visible.length);
       ctx.lineWidth = 1.25;
-      for (const m of MA_SERIES) {
-        ctx.strokeStyle = m.color;
+      for (const s of seriesList) {
+        ctx.strokeStyle = s.color;
         ctx.beginPath();
         let started = false;
         for (let i = from; i <= to; i++) {
-          const val = indicators[i][m.key];
+          const val = indicators[i][s.key];
           if (val === null) { started = false; continue; }
-          const xx = xOf(i), yy = y(val);
+          const xx = xOf(i), yy = yFn(val);
           if (!started) { ctx.moveTo(xx, yy); started = true; }
           else ctx.lineTo(xx, yy);
         }
@@ -648,6 +669,8 @@
       }
       ctx.lineWidth = 1;
     }
+    if (showMa) drawIndicatorLines(MA_SERIES, y);
+    if (showKd) drawIndicatorLines(KD_SERIES, kdY);
 
     // 買賣點：期間內有買進就在 K 棒下方標 ▲，有賣出就在上方標 ▼，兩者都有就都標
     const trades = game.trades();
@@ -672,10 +695,10 @@
     ctx.lineWidth = 1;
     ctx.restore();
 
-    if (indicators) {
+    if (showMa) {
       const latest = indicators[n - 1];
       ctx.font = '12px system-ui';
-      const items = MA_SERIES.map((m) => ({ color: m.color, text: maText(latest, m) }));
+      const items = MA_SERIES.map((m) => ({ color: m.color, text: indText(latest, m) }));
       const totalW = items.reduce((s, it) => s + ctx.measureText(it.text).width + 10, 0) + 6;
       const ly = priceH - 22;
       ctx.fillStyle = 'rgba(17, 17, 17, 0.75)';
@@ -711,11 +734,13 @@
       const head = period === 'day' ? fmtDateWeek(c.startDate) : `${fmtDate(c.startDate)}–${fmtDate(c.endDate)}`;
       const ohlc = `開 ${c.open.toFixed(2)}　高 ${c.high.toFixed(2)}　低 ${c.low.toFixed(2)}　收 ${c.close.toFixed(2)}`;
       const counts = period === 'day' ? [] : [`買進 ${tradesIn(c, 'buy')} 筆　賣出 ${tradesIn(c, 'sell')} 筆`];
-      const maLine = indicators ? [MA_SERIES.map((m) => maText(indicators[hovered], m)).join('　')] : [];
-      const text = [head, ohlc, `量 ${c.volume}`, ...counts, ...maLine].join('　');
+      const indLines = [];
+      if (showMa) indLines.push(MA_SERIES.map((m) => indText(indicators[hovered], m)).join('　'));
+      if (showKd) indLines.push(KD_SERIES.map((m) => indText(indicators[hovered], m)).join('　'));
+      const text = [head, ohlc, `量 ${c.volume}`, ...counts, ...indLines].join('　');
       ctx.font = '12px system-ui';
       // 窄螢幕放不下一行時拆成多行
-      const lines = ctx.measureText(text).width + 20 > w ? [`${head}　量 ${c.volume}`, ohlc, ...counts, ...maLine] : [text];
+      const lines = ctx.measureText(text).width + 20 > w ? [`${head}　量 ${c.volume}`, ohlc, ...counts, ...indLines] : [text];
       // 放在週期按鈕下方
       ctx.fillStyle = 'rgba(17, 17, 17, 0.85)';
       ctx.fillRect(4, 36, Math.max(...lines.map((l) => ctx.measureText(l).width)) + 12, 6 + lines.length * 16);
@@ -770,6 +795,7 @@
     setSpeed(saved.ui.speed);
     setReveal(saved.ui.reveal);
     setShowMa(Boolean(saved.ui.showMa));
+    setShowKd(Boolean(saved.ui.showKd));
     setPeriod(saved.ui.period || 'day'); // 加入 K 棒週期之前的存檔沒有這個欄位
     for (const key of ['buyHold', 'dca']) $(`show-${key}`).checked = showBenchmark[key] = saved.ui.showBenchmark[key];
     setPlaying(false);

@@ -338,20 +338,32 @@
     }
     const isAggregate = function (period) { return period === 'week' || period === 'month'; };
 
-    // 計算指定 K 棒序列的均線（5、20、60）；不足 N 根時為 null
+    // 計算指定 K 棒序列的均線（5、20、60）與 KD(9,3,3)；不足 N 根的均線為 null
     function computeIndicators(bars) {
       const periods = [5, 20, 60];
       const sums = [0, 0, 0];
+      let kdK = 50;
+      let kdD = 50;
       return bars.map(function (b, i) {
         for (let k = 0; k < periods.length; k++) {
           const n = periods[k];
           sums[k] += b.close;
           if (i >= n) sums[k] -= bars[i - n].close;
         }
+        let hi9 = -Infinity, lo9 = Infinity;
+        for (let j = Math.max(0, i - 8); j <= i; j++) {
+          if (bars[j].high > hi9) hi9 = bars[j].high;
+          if (bars[j].low < lo9) lo9 = bars[j].low;
+        }
+        const rsv = hi9 === lo9 ? 50 : ((b.close - lo9) / (hi9 - lo9)) * 100;
+        kdK = (2 * kdK + rsv) / 3;
+        kdD = (2 * kdD + kdK) / 3;
         return {
           ma5: i + 1 >= 5 ? sums[0] / 5 : null,
           ma20: i + 1 >= 20 ? sums[1] / 20 : null,
           ma60: i + 1 >= 60 ? sums[2] / 60 : null,
+          k: kdK,
+          d: kdD,
         };
       });
     }

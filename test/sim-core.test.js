@@ -741,3 +741,65 @@ test('均線：週 K 與月 K 以該週期收盤價計算，不足 N 根時為 n
   assert.notEqual(afterLast, beforeLast);
   assert.ok(Math.abs(afterLast - expectedMa(afterWeeks, 5).at(-1)) < 1e-9);
 });
+
+// 獨立實作 KD(9,3,3)：RSV 取最近 9 根，K 與 D 各以 1/3 平滑，第一根之前以 50 起算，高低相等時 RSV 取 50
+function expectedKd(bars) {
+  let k = 50, d = 50;
+  return bars.map((b, i) => {
+    const window = bars.slice(Math.max(0, i - 8), i + 1);
+    const hi = Math.max(...window.map((x) => x.high));
+    const lo = Math.min(...window.map((x) => x.low));
+    const rsv = hi === lo ? 50 : ((b.close - lo) / (hi - lo)) * 100;
+    k = (2 / 3) * k + (1 / 3) * rsv;
+    d = (2 / 3) * d + (1 / 3) * k;
+    return { k, d };
+  });
+}
+
+function assertKdMatches(bars, indicators) {
+  assert.equal(indicators.length, bars.length);
+  const expected = expectedKd(bars);
+  indicators.forEach((v, i) => {
+    assert.equal(Number.isFinite(v.k), true, `第 ${i} 根 K 為 ${v.k}`);
+    assert.equal(Number.isFinite(v.d), true, `第 ${i} 根 D 為 ${v.d}`);
+    assert.ok(Math.abs(v.k - expected[i].k) < 1e-9);
+    assert.ok(Math.abs(v.d - expected[i].d) < 1e-9);
+  });
+}
+
+test('KD：日 K、週 K 與月 K 符合 KD(9,3,3) 且第一根之前以 50 起算，盤中隨 tick 即時更新', () => {
+  const game = createGame({ seed: 7, startDate: '2024-01-01' });
+  const daily = game.candles();
+  const dailyInd = game.indicators();
+  // 第一根之前 K、D 皆為 50
+  const rsv0 = ((daily[0].close - daily[0].low) / (daily[0].high - daily[0].low)) * 100;
+  const k0 = (2 / 3) * 50 + (1 / 3) * rsv0;
+  const d0 = (2 / 3) * 50 + (1 / 3) * k0;
+  assert.ok(Math.abs(dailyInd[0].k - k0) < 1e-9);
+  assert.ok(Math.abs(dailyInd[0].d - d0) < 1e-9);
+
+  advance(game, TICKS_PER_DAY * 30 + 35);
+  for (const period of ['day', 'week', 'month']) {
+    assertKdMatches(game.candles(period), game.indicators(period));
+  }
+
+  // 盤中最後一根隨 tick 即時更新
+  const before = game.indicators('week').at(-1);
+  advance(game, 100);
+  const after = game.indicators('week').at(-1);
+  assert.notEqual(after.k, before.k);
+  assert.notEqual(after.d, before.d);
+  assertKdMatches(game.candles('week'), game.indicators('week'));
+});
+
+test('KD：9 根高低相等時 RSV 取 50，不出現 NaN', () => {
+  const game = createGame({ seed: 7, startPrice: 0.01 });
+  const bars = game.candles();
+  assert.ok(bars.slice(0, 9).every((b) => b.high === b.low));
+  for (const v of game.indicators()) {
+    assert.equal(Number.isNaN(v.k), false);
+    assert.equal(Number.isNaN(v.d), false);
+    assert.equal(v.k, 50);
+    assert.equal(v.d, 50);
+  }
+});
