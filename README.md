@@ -1,3 +1,11 @@
+你的炒股能力好嗎？
+
+我做了一個股票模擬器：行情模擬真實市場、每局都不一樣，最長 30 年可以快轉，最後和買進持有、定期定額比報酬。
+
+免費、免註冊、手機可玩 👉 https://jonsonchang.github.io/stock-sim/
+
+<img src="docs/screenshot-desktop.png" alt="桌面版畫面" height="400"> <img src="docs/screenshot-mobile.png" alt="手機版畫面" height="400">
+
 # 股票投資模擬器
 
 用不會賠真錢的方式練習看盤、練習買賣判斷。
