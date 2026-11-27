@@ -155,8 +155,8 @@
   <div class="row">
     <input id="qty" type="number" min="1" step="1" value="1000"> 股
     <button id="lot">1 張</button>
-    <button id="all-in">全部資金</button>
-    <button id="all-shares" disabled>全部持股</button>
+    <button id="half-cash">一半資金</button>
+    <button id="half-shares" disabled>一半持股</button>
   </div>
   <div id="estimate"></div>
   <div class="row">
@@ -406,14 +406,10 @@
   const validQty = () => Number.isInteger(qty()) && qty() > 0;
 
   $('lot').onclick = () => { qtyInput.value = 1000; updateEstimate(); };
-  $('all-in').onclick = () => { qtyInput.value = game.maxBuyShares(); updateEstimate(); };
-  $('all-shares').onclick = () => {
-    const shares = game.account().shares;
-    if (shares > 0) {
-      qtyInput.value = shares;
-      updateEstimate();
-    }
-  };
+  const halfCashShares = () => game.maxBuyShares(game.account().cash / 2);
+  const halfShares = () => Math.floor(game.account().shares / 2);
+  $('half-cash').onclick = () => { qtyInput.value = halfCashShares(); updateEstimate(); };
+  $('half-shares').onclick = () => { qtyInput.value = halfShares(); updateEstimate(); };
   let fillToastTimer = null;
   function clearFillToast() {
     clearTimeout(fillToastTimer);
@@ -756,7 +752,8 @@
     updateEstimate();
 
     const a = game.account();
-    $('all-shares').disabled = a.shares <= 0;
+    $('half-cash').disabled = halfCashShares() <= 0;
+    $('half-shares').disabled = halfShares() <= 0;
     $('pos-shares').textContent = a.shares.toLocaleString('zh-TW');
     $('pos-avg').textContent = a.shares > 0 ? a.avgCost.toFixed(2) : '-';
     $('pos-cash').textContent = money(a.cash);

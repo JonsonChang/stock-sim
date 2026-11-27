@@ -141,6 +141,20 @@ test('全部資金買進後現金不為負，再多買 1 股就被拒絕', () =>
   assert.deepEqual(game.order({ side: 'buy', shares: 1 }), { ok: false, reason: 'insufficient-cash' });
 });
 
+test('以一半現金為預算的最大股數：總額含手續費不超過現金一半，再多 1 股就超過', () => {
+  const game = createGame({ seed: 7, initialCash: 50000 });
+  const half = 50000 / 2;
+  const n = game.maxBuyShares(half);
+  assert.ok(n > 0);
+  assert.ok(game.quote('buy', n).total <= half);
+  assert.ok(game.quote('buy', n + 1).total > half);
+});
+
+test('預算買不起 1 股時最大股數為 0', () => {
+  const game = createGame({ seed: 7 });
+  assert.equal(game.maxBuyShares(1), 0);
+});
+
 test('零股可成交，交易紀錄記下交易日、買賣、股數、成交價、手續費、證交稅', () => {
   const game = createGame({ seed: 7 });
   const buyPrice = game.price();
