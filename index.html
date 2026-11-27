@@ -31,6 +31,7 @@
   aside dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 0; }
   aside dd { margin: 0; text-align: right; }
   #buy, #m-buy { background: #6b1d1d; } #sell, #m-sell { background: #1d4d2a; }
+  #order[data-side="buy"] #buy, #order[data-side="sell"] #sell { border-color: #ddd; box-shadow: 0 0 0 1px #ddd; }
   #order-msg { color: #ffa94d; min-height: 1.2em; }
   #fill-toast { padding: 4px 8px; margin-bottom: 6px; background: #1a1a1a; border: 1px solid #444; font-weight: 600; }
   #fill-toast[hidden] { display: none; }
@@ -420,7 +421,11 @@
     el.hidden = false;
     fillToastTimer = setTimeout(clearFillToast, FILL_TOAST_MS);
   }
+  function setOrderSide(side) {
+    $('order').dataset.side = side;
+  }
   function placeOrder(side) {
+    setOrderSide(side);
     const result = game.order({ side, shares: qty() });
     $('order-msg').textContent = result.ok ? '' : REJECT[result.reason];
     if (result.ok) {
@@ -434,7 +439,7 @@
 
   // 手機版：底部按鈕滑出市價單面板，面板只顯示按下的那一邊
   function openSheet(side) {
-    $('order').dataset.side = side;
+    setOrderSide(side);
     $('order-msg').textContent = '';
     document.body.classList.add('sheet-open');
   }
@@ -687,7 +692,39 @@
   function closeReport() { reportEl.hidden = true; }
   $('report-btn').onclick = openReport;
   $('report-close').onclick = closeReport;
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !reportEl.hidden) closeReport(); });
+  const SPEED_SHORTCUTS = { '1': 1, '2': 5, '3': 50 };
+  function isEditableTarget(el) {
+    return Boolean(el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable));
+  }
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !reportEl.hidden) {
+      closeReport();
+      return;
+    }
+    if (!reportEl.hidden || e.isComposing || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.target === qtyInput && e.key === 'Enter') {
+      e.preventDefault();
+      if (!e.repeat && !game.expired()) placeOrder($('order').dataset.side || 'buy');
+      return;
+    }
+    if (isEditableTarget(e.target)) return;
+    if (e.code === 'Space' || e.key === ' ') {
+      e.preventDefault();
+      if (!e.repeat && !game.expired()) setPlaying(!playing);
+      return;
+    }
+    if (e.repeat) return;
+    if (Object.hasOwn(SPEED_SHORTCUTS, e.key)) {
+      if (!game.expired()) setSpeed(SPEED_SHORTCUTS[e.key]);
+      return;
+    }
+    const key = e.key.toLowerCase();
+    if (key === 'b' || key === 's') {
+      e.preventDefault();
+      setOrderSide(key === 'b' ? 'buy' : 'sell');
+      qtyInput.focus();
+    }
+  });
 
   let shownTrades = -1;
   function updateEstimate() {
