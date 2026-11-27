@@ -92,7 +92,7 @@ function loadUiHarness() {
   };
 
   // 初始化關鍵元素的初始狀態（對齊 index.html 靜態 HTML）
-  for (const id of ['notice', 'expired', 'restart-panel', 'latest', 'report', 'report-open', 'fill-toast']) {
+  for (const id of ['notice', 'expired', 'restart-page', 'latest', 'report', 'report-open', 'fill-toast']) {
     getEl(id).hidden = true;
   }
   getEl('play').textContent = '暫停';

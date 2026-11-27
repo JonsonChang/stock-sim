@@ -74,7 +74,7 @@ function loadUiHarness() {
     return elements.get(id);
   };
 
-  for (const id of ['notice', 'expired', 'restart-panel', 'latest', 'report', 'report-open', 'fill-toast']) {
+  for (const id of ['notice', 'expired', 'restart-page', 'latest', 'report', 'report-open', 'fill-toast']) {
     getEl(id).hidden = true;
   }
   getEl('qty').value = '1000';
