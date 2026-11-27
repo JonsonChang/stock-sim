@@ -40,18 +40,15 @@
   table { width: 100%; border-collapse: collapse; }
   th, td { padding: 2px 4px; text-align: right; border-bottom: 1px solid #222; }
   #notice, #restart-msg, #expired { color: #ffa94d; }
-  #restart-panel { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 6px 12px; border-top: 1px solid #333; font-size: 13px; }
-  #restart-panel[hidden] { display: none; }
-  #restart-panel input { width: 110px; background: #222; color: #ddd; border: 1px solid #555; padding: 3px 6px; }
   #custom-speed { width: 56px; background: #222; color: #ddd; border: 1px solid #555; padding: 3px 6px; }
   /* 手機版專用元素，桌面版不顯示 */
   .tabs, #m-actions, #backdrop, #sheet-close { display: none; }
-  /* 投資報告：頁內全畫面覆蓋層，桌面與手機共用 */
-  #report { position: fixed; inset: 0; z-index: 10; background: #111; overflow-y: auto; -webkit-overflow-scrolling: touch; font-size: 13px; }
-  #report[hidden] { display: none; }
-  #report .inner { max-width: 960px; margin: 0 auto; padding: 12px 16px 32px; }
-  #report .head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
-  #report h2 { margin: 0; font-size: 18px; }
+  /* 投資報告與重新開局：頁內全畫面覆蓋層，桌面與手機共用 */
+  #report, #restart-page { position: fixed; inset: 0; z-index: 10; background: #111; overflow-y: auto; -webkit-overflow-scrolling: touch; font-size: 13px; }
+  #report[hidden], #restart-page[hidden] { display: none; }
+  #report .inner, #restart-page .inner { max-width: 960px; margin: 0 auto; padding: 12px 16px 32px; }
+  #report .head, #restart-page .head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  #report h2, #restart-page h2 { margin: 0; font-size: 18px; }
   #report h3 { margin: 16px 0 6px; font-size: 14px; }
   #report-info { color: #aaa; line-height: 1.6; margin-top: 4px; }
   #report .scroll-x { overflow-x: auto; }
@@ -61,6 +58,11 @@
   #report .note { color: #888; margin-top: 4px; }
   #report .toggles { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
   #report .toggles label { cursor: pointer; }
+  #restart-page .fields { display: grid; gap: 10px; max-width: 360px; margin: 16px 0; }
+  #restart-page label { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  #restart-page input { width: 160px; background: #222; color: #ddd; border: 1px solid #555; padding: 4px 6px; }
+  #restart-page .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  #restart-msg { margin-top: 8px; }
   #report-chart { display: block; width: 100%; height: 360px; cursor: crosshair; touch-action: pan-y; } /* 只讓瀏覽器處理上下捲動，左右拖曳交給十字線 */
 
   @media (max-width: 768px) {
@@ -74,9 +76,8 @@
     .header-group ~ .header-group { border-left: none; padding-left: 0; }
     [data-header-group="session"] { margin-left: 0; }
     .chart-overlay-top button { padding: 3px 6px; font-size: 12px; }
-    #restart-panel { order: 2; } /* 和 header 同序，依 DOM 順序排在資訊列下方 */
     aside { order: 3; flex: 1; min-width: 0; min-height: 0; padding: 0 8px 72px; border-left: none; border-top: 1px solid #333; }
-    aside input, #restart-panel input, #custom-speed { font-size: 16px; } /* 小於 16px 時 iOS 聚焦輸入框會自動放大頁面 */
+    aside input, #restart-page input, #custom-speed { font-size: 16px; } /* 小於 16px 時 iOS 聚焦輸入框會自動放大頁面 */
     .tabs { display: flex; position: sticky; top: 0; z-index: 1; background: #111; }
     .tabs button { flex: 1; padding: 8px; border-width: 0 0 2px; border-color: transparent; background: none; }
     .tabs button.active { border-color: #ddd; background: none; }
@@ -124,16 +125,6 @@
     <button id="restart">重新開局</button>
   </div>
 </header>
-<div id="restart-panel" hidden>
-  <label>種子 <input id="new-seed" type="number" min="0" step="1" placeholder="隨機"></label>
-  <label>起始價 <input id="new-price" type="number" min="0.01" step="any" value="100"></label>
-  <label>初始資金 <input id="new-cash" type="number" min="0" step="1" value="1000000"></label>
-  <label>每月入金 <input id="new-monthly" type="number" min="0" step="1" value="10000"></label>
-  <label>起始日期 <input id="new-date" type="date" min="1900-01-01" max="2999-12-31"></label>
-  <button id="restart-confirm">確認開局（覆蓋目前存檔）</button>
-  <button id="restart-cancel">取消</button>
-  <span id="restart-msg"></span>
-</div>
 <main>
 <div id="chart-wrap">
   <canvas id="chart"></canvas>
@@ -207,6 +198,23 @@
   </section>
 </aside>
 </main>
+<div id="restart-page" hidden role="dialog" aria-label="重新開局">
+  <div class="inner">
+    <div class="head"><h2>重新開局</h2></div>
+    <div class="fields">
+      <label>種子 <input id="new-seed" type="number" min="0" step="1" placeholder="隨機"></label>
+      <label>起始價 <input id="new-price" type="number" min="0.01" step="any" value="100"></label>
+      <label>初始資金 <input id="new-cash" type="number" min="0" step="1" value="1000000"></label>
+      <label>每月入金 <input id="new-monthly" type="number" min="0" step="1" value="10000"></label>
+      <label>起始日期 <input id="new-date" type="date" min="1900-01-01" max="2999-12-31"></label>
+    </div>
+    <div class="actions">
+      <button id="restart-confirm">確認開局（覆蓋目前存檔）</button>
+      <button id="restart-cancel">取消</button>
+    </div>
+    <div id="restart-msg"></div>
+  </div>
+</div>
 <div id="report" hidden role="dialog" aria-label="投資報告">
   <div class="inner">
     <div class="head"><h2>投資報告</h2><button id="report-close">關閉</button></div>
@@ -475,19 +483,23 @@
     closeReport();
   }
 
-  // 重新開局：頁面內的設定區與確認按鈕，不使用 alert／confirm
-  const restartPanel = $('restart-panel');
+  // 重新開局：頁內全畫面頁面，不使用 alert／confirm；開啟時自動暫停，關閉後維持暫停
+  const restartPage = $('restart-page');
   // 起始日期預設為開局當天的真實日期
   function todayInput() {
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   }
-  $('new-date').value = todayInput();
-  $('restart').onclick = () => {
-    if (restartPanel.hidden) $('new-date').value = todayInput();
-    restartPanel.hidden = !restartPanel.hidden;
-  };
-  $('restart-cancel').onclick = () => { restartPanel.hidden = true; };
+  function openRestart() {
+    if (playing) setPlaying(false);
+    closeSheet();
+    $('new-date').value = todayInput();
+    $('restart-msg').textContent = '';
+    restartPage.hidden = false;
+  }
+  function closeRestart() { restartPage.hidden = true; }
+  $('restart').onclick = openRestart;
+  $('restart-cancel').onclick = closeRestart;
   function parseNonNeg(id) {
     const text = $(id).value.trim();
     const n = Number(text);
@@ -512,7 +524,7 @@
     startGame(createGame({ seed, startPrice, initialCash, monthlyContribution, startDate }));
     saveBlocked = false;
     saveGame();
-    restartPanel.hidden = true;
+    closeRestart();
     $('notice').hidden = true;
   };
   const pct = (r) => `${r > 0 ? '+' : ''}${(r * 100).toFixed(2)}%`;
@@ -697,11 +709,15 @@
     return Boolean(el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable));
   }
   document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !restartPage.hidden) {
+      closeRestart();
+      return;
+    }
     if (e.key === 'Escape' && !reportEl.hidden) {
       closeReport();
       return;
     }
-    if (!reportEl.hidden || e.isComposing || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (!reportEl.hidden || !restartPage.hidden || e.isComposing || e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.target === qtyInput && e.key === 'Enter') {
       e.preventDefault();
       if (!e.repeat && !game.expired()) placeOrder($('order').dataset.side || 'buy');
@@ -1211,7 +1227,8 @@
         startGame(restored.game);
       } else {
         $('notice').textContent = '行情引擎已更新，需重新開局';
-        restartPanel.hidden = false;
+        openRestart();
+        $('restart-msg').textContent = $('notice').textContent; // 頁面蓋住資訊列，原因也要顯示在頁面內
         saveBlocked = true;
         startGame(createGame());
       }
