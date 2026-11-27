@@ -6,17 +6,24 @@
 <title>股票投資模擬器</title>
 <style>
   :root { --user: #4dabf7; --buyHold: #da77f2; --dca: #ffa94d; }
-  body { margin: 0; font-family: system-ui, sans-serif; background: #111; color: #ddd; }
-  header { display: flex; gap: 16px; align-items: center; padding: 8px 12px; flex-wrap: wrap; }
+  body { margin: 0; font-family: system-ui, sans-serif; background: #111; color: #ddd; display: flex; flex-direction: column; height: 100vh; }
+  header { display: flex; gap: 10px 20px; align-items: center; padding: 8px 12px; flex-wrap: wrap; border-bottom: 1px solid #222; }
+  header [hidden] { display: none; }
+  .header-group { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .header-group ~ .header-group { border-left: 1px solid #333; padding-left: 16px; }
+  [data-header-group="session"] { margin-left: auto; }
+  .speed-controls { display: inline-flex; gap: 4px; align-items: center; flex-wrap: wrap; }
   button { background: #333; color: #ddd; border: 1px solid #555; padding: 4px 10px; cursor: pointer; }
   button.active { background: #555; border-color: #999; }
   button:disabled { opacity: 0.4; cursor: default; }
-  main { display: flex; height: calc(100vh - 48px); }
+  main { display: flex; flex: 1; min-height: 0; }
   #chart-wrap { position: relative; flex: 3; min-width: 0; }
   #chart { display: block; width: 100%; height: 100%; cursor: crosshair; }
   #chart.dragging { cursor: grabbing; }
-  #latest { position: absolute; right: 72px; top: 8px; }
-  #periods { position: absolute; left: 8px; top: 8px; }
+  .chart-overlay-top { position: absolute; left: 8px; right: 68px; top: 8px; display: flex; justify-content: space-between; align-items: flex-start; gap: 6px 8px; flex-wrap: wrap; pointer-events: none; }
+  .chart-overlay-top button { pointer-events: auto; }
+  .chart-toolbar { display: flex; align-items: center; gap: 4px 8px; flex-wrap: wrap; }
+  .chart-toggles { display: inline-flex; gap: 4px; flex-wrap: wrap; }
   aside { flex: 1; min-width: 260px; padding: 8px 12px; overflow-y: auto; border-left: 1px solid #333; font-size: 13px; }
   aside h3 { margin: 12px 0 6px; font-size: 14px; }
   aside input { width: 90px; background: #222; color: #ddd; border: 1px solid #555; padding: 3px 6px; }
@@ -59,8 +66,13 @@
     main { display: contents; }
     #chart-wrap { order: 1; flex: none; height: 55vh; height: 55dvh; }
     #chart { touch-action: none; } /* 圖表上的手勢全部交給圖表自己處理 */
-    header { order: 2; gap: 4px 10px; padding: 6px 8px; font-size: 13px; border-top: 1px solid #333; }
+    header { order: 2; gap: 6px 10px; padding: 6px 8px; font-size: 13px; border-top: 1px solid #333; border-bottom: none; }
     header .m-only { display: inline; }
+    .header-group.m-only { display: flex; }
+    .header-group { gap: 4px 8px; max-width: 100%; }
+    .header-group ~ .header-group { border-left: none; padding-left: 0; }
+    [data-header-group="session"] { margin-left: 0; }
+    .chart-overlay-top button { padding: 3px 6px; font-size: 12px; }
     #restart-panel { order: 2; } /* 和 header 同序，依 DOM 順序排在資訊列下方 */
     aside { order: 3; flex: 1; min-width: 0; min-height: 0; padding: 0 8px 72px; border-left: none; border-top: 1px solid #333; }
     aside input, #restart-panel input, #custom-speed { font-size: 16px; } /* 小於 16px 時 iOS 聚焦輸入框會自動放大頁面 */
@@ -84,26 +96,31 @@
 </head>
 <body>
 <header>
-  <button id="play">暫停</button>
-  <span>
-    <button data-speed="1" class="active">1x</button>
-    <button data-speed="5">5x</button>
-    <button data-speed="50">50x</button>
-    <button id="custom-speed-btn">自定</button>
-    <input id="custom-speed" type="number" min="1" step="1" value="100" aria-label="自定倍速">x
-  </span>
-  <button id="reveal">揭曉：關</button>
-  <button id="ma">均線：關</button>
-  <button id="kd">KD：關</button>
-  <span>現價 <b id="price"></b></span>
-  <span><b id="date"></b>　第 <b id="year"></b> 年</span>
-  <span class="m-only">漲跌 <b id="change"></b></span>
-  <span class="m-only">總資產報酬 <b id="ret-bar"></b></span>
-  <span>種子 <b id="seed"></b></span>
-  <button id="restart">重新開局</button>
-  <button id="report-btn">投資報告</button>
+  <div class="header-group" data-header-group="play">
+    <button id="play">暫停</button>
+    <span class="speed-controls">
+      <button data-speed="1" class="active">1x</button>
+      <button data-speed="5">5x</button>
+      <button data-speed="50">50x</button>
+      <button id="custom-speed-btn">自定</button>
+      <input id="custom-speed" type="number" min="1" step="1" value="100" aria-label="自定倍速">x
+    </span>
+  </div>
+  <div class="header-group" data-header-group="market">
+    <span>現價 <b id="price"></b></span>
+    <span class="m-only">漲跌 <b id="change"></b></span>
+    <span><b id="date"></b>　第 <b id="year"></b> 年</span>
+  </div>
+  <div class="header-group m-only" data-header-group="performance">
+    <span class="m-only">總資產報酬 <b id="ret-bar"></b></span>
+  </div>
   <span id="notice" hidden></span>
   <span id="expired" hidden>已達模擬期限</span>
+  <div class="header-group" data-header-group="session">
+    <span>種子 <b id="seed"></b></span>
+    <button id="report-btn">投資報告</button>
+    <button id="restart">重新開局</button>
+  </div>
 </header>
 <div id="restart-panel" hidden>
   <label>種子 <input id="new-seed" type="number" min="0" step="1" placeholder="隨機"></label>
@@ -118,10 +135,19 @@
 <main>
 <div id="chart-wrap">
   <canvas id="chart"></canvas>
-  <span id="periods">
-    <button data-period="day" class="active">日 K</button><button data-period="week">週 K</button><button data-period="month">月 K</button>
-  </span>
-  <button id="latest" hidden>回到最新</button>
+  <div class="chart-overlay-top">
+    <div class="chart-toolbar">
+      <span id="periods">
+        <button data-period="day" class="active">日 K</button><button data-period="week">週 K</button><button data-period="month">月 K</button>
+      </span>
+      <span class="chart-toggles">
+        <button id="ma">均線：關</button>
+        <button id="kd">KD：關</button>
+        <button id="reveal">揭曉：關</button>
+      </span>
+    </div>
+    <button id="latest" hidden>回到最新</button>
+  </div>
 </div>
 <aside>
   <nav class="tabs">
@@ -670,6 +696,7 @@
   const canvas = document.getElementById('chart');
   const ctx = canvas.getContext('2d');
   const latestBtn = document.getElementById('latest');
+  const chartOverlayTop = document.querySelector('.chart-overlay-top');
 
   // 可視範圍：count 是可視 K 棒數（Infinity 表示全部）；start 是最左側的 K 棒索引，可為小數，null 表示跟隨最新的 K 棒
   const view = { count: 80, start: null };
@@ -905,6 +932,9 @@
     ctx.save();
     ctx.beginPath(); ctx.rect(0, 0, plotW, h); ctx.clip(); // 平移到一半的 K 棒不要畫進價格軸
 
+    latestBtn.hidden = view.start === null;
+    const topClearance = Math.max(36, chartOverlayTop.offsetTop + chartOverlayTop.offsetHeight + 4);
+
     if (reveal) {
       const markers = game.dayMarkers();
       // 市場狀態以交易日為單位：每個交易日在所屬 K 棒的寬度內平分一段
@@ -924,7 +954,7 @@
         ctx.fillStyle = band.fill;
         ctx.fillRect(left, 0, segs[i - 1].left + segs[i - 1].width - left, h);
         ctx.fillStyle = '#aaa';
-        ctx.fillText(band.label, Math.max(0, left) + 4, 48); // 區段起點平移出畫面時，標籤留在左緣
+        ctx.fillText(band.label, Math.max(0, left) + 4, topClearance + 12); // 區段起點平移出畫面時，標籤留在左緣
         bandStart = i;
       }
       // 跳躍：期間內任一個交易日有跳躍，就在該 K 棒上方加標記
@@ -1037,14 +1067,12 @@
       ctx.font = '12px system-ui';
       // 窄螢幕放不下一行時拆成多行
       const lines = ctx.measureText(text).width + 20 > w ? [`${head}　量 ${c.volume}`, ohlc, ...counts, ...indLines] : [text];
-      // 放在週期按鈕下方
+      // 放在圖表頂部控制列下方
       ctx.fillStyle = 'rgba(17, 17, 17, 0.85)';
-      ctx.fillRect(4, 36, Math.max(...lines.map((l) => ctx.measureText(l).width)) + 12, 6 + lines.length * 16);
+      ctx.fillRect(4, topClearance, Math.max(...lines.map((l) => ctx.measureText(l).width)) + 12, 6 + lines.length * 16);
       ctx.fillStyle = '#ddd';
-      lines.forEach((l, i) => ctx.fillText(l, 10, 51 + i * 16));
+      lines.forEach((l, i) => ctx.fillText(l, 10, topClearance + 15 + i * 16));
     }
-
-    latestBtn.hidden = view.start === null;
 
     document.getElementById('price').textContent = game.price().toFixed(2);
     const change = all.length > 1 ? game.price() / all.at(-2).close - 1 : 0; // 相對前一交易日收盤
