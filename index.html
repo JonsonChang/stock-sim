@@ -30,7 +30,7 @@
   aside .row { display: flex; gap: 6px; align-items: center; margin: 4px 0; flex-wrap: wrap; }
   aside dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 0; }
   aside dd { margin: 0; text-align: right; }
-  #buy, #m-buy { background: #6b1d1d; } #sell, #m-sell { background: #1d4d2a; }
+  #buy, #m-buy, #all-in { background: #6b1d1d; } #sell, #m-sell, #all-out { background: #1d4d2a; }
   #order[data-side="buy"] #buy, #order[data-side="sell"] #sell { border-color: #ddd; box-shadow: 0 0 0 1px #ddd; }
   #order-msg { color: #ffa94d; min-height: 1.2em; }
   #fill-toast { padding: 4px 8px; margin-bottom: 6px; background: #1a1a1a; border: 1px solid #444; font-weight: 600; }
@@ -88,7 +88,7 @@
     #m-actions button { flex: 1; padding: 12px; font-size: 18px; }
     #order { position: fixed; left: 0; right: 0; bottom: 0; z-index: 3; padding: 4px 12px calc(12px + env(safe-area-inset-bottom)); background: #1a1a1a; border-top: 1px solid #444; transform: translateY(100%); transition: transform 0.2s; }
     body.sheet-open #order { transform: none; }
-    #order[data-side="buy"] #sell, #order[data-side="sell"] #buy { display: none; }
+    #order[data-side="buy"] #sell, #order[data-side="buy"] #all-out, #order[data-side="sell"] #buy, #order[data-side="sell"] #all-in { display: none; }
     #order #buy, #order #sell { flex: 1; padding: 12px; font-size: 18px; }
     #sheet-close { display: inline-block; float: right; margin-top: 8px; }
     #backdrop { display: block; position: fixed; inset: 0; z-index: 2; background: rgba(0, 0, 0, 0.5); opacity: 0; pointer-events: none; transition: opacity 0.2s; }
@@ -161,7 +161,9 @@
   <div id="estimate"></div>
   <div class="row">
     <button id="buy">買進</button>
+    <button id="all-in" disabled>ALL in</button>
     <button id="sell">賣出</button>
+    <button id="all-out" disabled>ALL out</button>
   </div>
   <div id="order-msg"></div>
   </section>
@@ -428,9 +430,9 @@
   function setOrderSide(side) {
     $('order').dataset.side = side;
   }
-  function placeOrder(side) {
+  function placeOrder(side, shares = qty()) {
     setOrderSide(side);
-    const result = game.order({ side, shares: qty() });
+    const result = game.order({ side, shares });
     $('order-msg').textContent = result.ok ? '' : REJECT[result.reason];
     if (result.ok) {
       saveGame();
@@ -462,6 +464,8 @@
   });
   $('buy').onclick = () => placeOrder('buy');
   $('sell').onclick = () => placeOrder('sell');
+  $('all-in').onclick = () => placeOrder('buy', game.maxBuyShares());
+  $('all-out').onclick = () => placeOrder('sell', game.account().shares);
   for (const key of ['buyHold', 'dca']) {
     $(`show-${key}`).onchange = (e) => { showBenchmark[key] = e.target.checked; };
   }
@@ -754,6 +758,8 @@
     const a = game.account();
     $('half-cash').disabled = halfCashShares() <= 0;
     $('half-shares').disabled = halfShares() <= 0;
+    $('all-in').disabled = game.expired() || game.maxBuyShares() <= 0;
+    $('all-out').disabled = game.expired() || a.shares <= 0;
     $('pos-shares').textContent = a.shares.toLocaleString('zh-TW');
     $('pos-avg').textContent = a.shares > 0 ? a.avgCost.toFixed(2) : '-';
     $('pos-cash').textContent = money(a.cash);
