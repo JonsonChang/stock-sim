@@ -43,12 +43,16 @@
   #custom-speed { width: 56px; background: #222; color: #ddd; border: 1px solid #555; padding: 3px 6px; }
   /* 手機版專用元素，桌面版不顯示 */
   .tabs, #m-actions, #backdrop, #sheet-close { display: none; }
-  /* 投資報告與重新開局：頁內全畫面覆蓋層，桌面與手機共用 */
-  #report, #restart-page { position: fixed; inset: 0; z-index: 10; background: #111; overflow-y: auto; -webkit-overflow-scrolling: touch; font-size: 13px; }
-  #report[hidden], #restart-page[hidden] { display: none; }
-  #report .inner, #restart-page .inner { max-width: 960px; margin: 0 auto; padding: 12px 16px 32px; }
-  #report .head, #restart-page .head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
-  #report h2, #restart-page h2 { margin: 0; font-size: 18px; }
+  /* 投資報告、重新開局與說明：頁內全畫面覆蓋層，桌面與手機共用 */
+  #report, #restart-page, #intro-page { position: fixed; inset: 0; z-index: 10; background: #111; overflow-y: auto; -webkit-overflow-scrolling: touch; font-size: 13px; }
+  #report[hidden], #restart-page[hidden], #intro-page[hidden] { display: none; }
+  #report .inner, #restart-page .inner, #intro-page .inner { max-width: 960px; margin: 0 auto; padding: 12px 16px 32px; }
+  #report .head, #restart-page .head, #intro-page .head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  #report h2, #restart-page h2, #intro-page h2 { margin: 0; font-size: 18px; }
+  #intro-page .inner { max-width: 640px; line-height: 1.7; font-size: 14px; }
+  #intro-page h3 { margin: 16px 0 4px; font-size: 15px; }
+  #intro-page ul { margin: 0; padding-left: 20px; }
+  #intro-start { margin-top: 20px; padding: 8px 24px; font-size: 15px; }
   #report h3 { margin: 16px 0 6px; font-size: 14px; }
   #report-info { color: #aaa; line-height: 1.6; margin-top: 4px; }
   #report .scroll-x { overflow-x: auto; }
@@ -121,6 +125,7 @@
   <span id="expired" hidden>已達模擬期限</span>
   <div class="header-group" data-header-group="session">
     <span>種子 <b id="seed"></b></span>
+    <button id="help-btn">說明</button>
     <button id="report-btn">投資報告</button>
     <button id="restart">重新開局</button>
   </div>
@@ -215,6 +220,23 @@
       <button id="restart-cancel">取消</button>
     </div>
     <div id="restart-msg"></div>
+  </div>
+</div>
+<div id="intro-page" hidden role="dialog" aria-label="說明">
+  <div class="inner">
+    <div class="head"><h2>歡迎使用股票投資模擬器</h2></div>
+    <p>這裡的股價是模擬真實市場的波動：有多頭、空頭、盤整，也有突發的大漲大跌與跳空。每一局的行情都不一樣，無法事先查到，適合用來驗證你的交易策略是否可行，又不用賠上真錢。</p>
+    <h3>基本玩法</h3>
+    <ul>
+      <li>行情會自動推進，K 棒一根根長出來。隨時可以暫停，或切換 1x／5x／50x 快轉。</li>
+      <li>你有一筆初始資金，之後每個月還會固定撥入每月入金。用市價單隨時買進或賣出，成交會計入手續費與證交稅。</li>
+      <li>右側面板可以看部位、績效與交易紀錄；「投資報告」會把你的操作和「買進持有」「定期定額」兩種單純策略並排比較。</li>
+      <li>一局最多進行 30 年，想換一段行情就按「重新開局」。</li>
+      <li>電腦快捷鍵：空白鍵暫停／播放，1／2／3 切換倍速，B／S 切換買賣，在數量框按 Enter 送出。</li>
+    </ul>
+    <h3>自動存檔</h3>
+    <p>進度會自動存在這個瀏覽器裡，不需要手動存檔。關掉網頁後隨時回來，都會從離開時的那一刻接著玩。</p>
+    <button id="intro-start">開始</button>
   </div>
 </div>
 <div id="report" hidden role="dialog" aria-label="投資報告">
@@ -527,6 +549,27 @@
     closeRestart();
     $('notice').hidden = true;
   };
+  // 說明頁：第一次進入（沒有存檔也沒看過）時自動開啟，之後可從「說明」按鈕再打開；開啟時暫停，關閉後恢復原本的播放狀態
+  const INTRO_KEY = 'stock-sim-intro-seen';
+  const introPage = $('intro-page');
+  let resumeAfterIntro = false;
+  function introSeen() {
+    try { return localStorage.getItem(INTRO_KEY) === '1'; } catch (e) { return false; }
+  }
+  function openIntro() {
+    resumeAfterIntro = playing;
+    if (playing) setPlaying(false);
+    closeSheet();
+    introPage.hidden = false;
+  }
+  function closeIntro() {
+    introPage.hidden = true;
+    try { localStorage.setItem(INTRO_KEY, '1'); } catch (e) { /* 無痕模式時下次仍會再顯示 */ }
+    if (resumeAfterIntro && !game.expired()) setPlaying(true);
+  }
+  $('help-btn').onclick = openIntro;
+  $('intro-start').onclick = closeIntro;
+
   const pct = (r) => `${r > 0 ? '+' : ''}${(r * 100).toFixed(2)}%`;
 
   // 投資報告：開啟時自動暫停，關閉後維持暫停
@@ -709,6 +752,10 @@
     return Boolean(el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable));
   }
   document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !introPage.hidden) {
+      closeIntro();
+      return;
+    }
     if (e.key === 'Escape' && !restartPage.hidden) {
       closeRestart();
       return;
@@ -717,7 +764,7 @@
       closeReport();
       return;
     }
-    if (!reportEl.hidden || !restartPage.hidden || e.isComposing || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (!reportEl.hidden || !restartPage.hidden || !introPage.hidden || e.isComposing || e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.target === qtyInput && e.key === 'Enter') {
       e.preventDefault();
       if (!e.repeat && !game.expired()) placeOrder($('order').dataset.side || 'buy');
@@ -1239,6 +1286,7 @@
     }));
   } else {
     startGame(createGame());
+    if (!introSeen()) openIntro();
     requestAnimationFrame(frame);
   }
 </script>

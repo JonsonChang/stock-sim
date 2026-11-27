@@ -92,7 +92,7 @@ function loadUiHarness() {
   };
 
   // 初始化關鍵元素的初始狀態（對齊 index.html 靜態 HTML）
-  for (const id of ['notice', 'expired', 'restart-page', 'latest', 'report', 'report-open', 'fill-toast']) {
+  for (const id of ['notice', 'expired', 'restart-page', 'intro-page', 'latest', 'report', 'report-open', 'fill-toast']) {
     getEl(id).hidden = true;
   }
   getEl('play').textContent = '暫停';
@@ -127,7 +127,7 @@ function loadUiHarness() {
       devicePixelRatio: 1,
       addEventListener: () => {},
     },
-    localStorage: { getItem: () => null, setItem: () => {} },
+    localStorage: { getItem: (k) => (k === 'stock-sim-intro-seen' ? '1' : null), setItem: () => {} }, // 已看過說明頁，避免說明頁暫停行情
     requestAnimationFrame: () => 0,
     setTimeout: () => 1,
     clearTimeout: () => {},

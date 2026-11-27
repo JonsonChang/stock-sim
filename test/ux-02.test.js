@@ -97,7 +97,7 @@ function loadUiHarness() {
       devicePixelRatio: 1,
       addEventListener: () => {},
     },
-    localStorage: { getItem: () => null, setItem: () => {} },
+    localStorage: { getItem: (k) => (k === 'stock-sim-intro-seen' ? '1' : null), setItem: () => {} }, // 已看過說明頁，避免說明頁暫停行情
     requestAnimationFrame: (cb) => {
       nextFrame = cb;
       return 1;
