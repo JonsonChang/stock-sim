@@ -299,9 +299,11 @@
       return { amount: amount, fee: fee, tax: tax, total: total };
     }
 
-    function maxBuyShares() {
-      let n = Math.floor(cash / (price * (1 + FEE_RATE)));
-      while (n > 0 && quote('buy', n).total > cash) n--;
+    // budget 省略時以全部現金為預算
+    function maxBuyShares(budget) {
+      if (budget === undefined) budget = cash;
+      let n = Math.floor(budget / (price * (1 + FEE_RATE)));
+      while (n > 0 && quote('buy', n).total > budget) n--;
       return n;
     }
 
