@@ -136,6 +136,7 @@
     <input id="qty" type="number" min="1" step="1" value="1000"> 股
     <button id="lot">1 張</button>
     <button id="all-in">全部資金</button>
+    <button id="all-shares" disabled>全部持股</button>
   </div>
   <div id="estimate"></div>
   <div class="row">
@@ -366,8 +367,15 @@
   const qty = () => Number(qtyInput.value);
   const validQty = () => Number.isInteger(qty()) && qty() > 0;
 
-  $('lot').onclick = () => { qtyInput.value = 1000; };
-  $('all-in').onclick = () => { qtyInput.value = game.maxBuyShares(); };
+  $('lot').onclick = () => { qtyInput.value = 1000; updateEstimate(); };
+  $('all-in').onclick = () => { qtyInput.value = game.maxBuyShares(); updateEstimate(); };
+  $('all-shares').onclick = () => {
+    const shares = game.account().shares;
+    if (shares > 0) {
+      qtyInput.value = shares;
+      updateEstimate();
+    }
+  };
   function placeOrder(side) {
     const result = game.order({ side, shares: qty() });
     $('order-msg').textContent = result.ok ? '' : REJECT[result.reason];
@@ -634,7 +642,7 @@
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !reportEl.hidden) closeReport(); });
 
   let shownTrades = -1;
-  function updatePanel(all) {
+  function updateEstimate() {
     if (validQty()) {
       const b = game.quote('buy', qty()), s = game.quote('sell', qty());
       $('estimate').textContent =
@@ -642,8 +650,12 @@
     } else {
       $('estimate').textContent = '';
     }
+  }
+  function updatePanel(all) {
+    updateEstimate();
 
     const a = game.account();
+    $('all-shares').disabled = a.shares <= 0;
     $('pos-shares').textContent = a.shares.toLocaleString('zh-TW');
     $('pos-avg').textContent = a.shares > 0 ? a.avgCost.toFixed(2) : '-';
     $('pos-cash').textContent = money(a.cash);
